@@ -862,6 +862,51 @@ if __name__ == "__main__":
     p.add_argument('latency_us', help='new latency value in microseconds.', type=int)
     p.set_defaults(func=bdev_delay_update_latency)
 
+    def bdev_congctrl_create(args):
+        print_json(rpc.bdev.bdev_congctrl_create(args.client,
+                                              base_bdev_name=args.base_bdev_name,
+                                              name=args.name,
+                                              upper_read_latency=args.read_latency_upper,
+                                              lower_read_latency=args.read_latency_lower,
+                                              upper_write_latency=args.write_latency_upper,
+                                              lower_write_latency=args.write_latency_lower))
+
+    p = subparsers.add_parser('bdev_congctrl_create',
+                              help='Add a congctrl bdev on existing bdev')
+    p.add_argument('-b', '--base-bdev-name', help="Name of the existing bdev", required=True)
+    p.add_argument('-d', '--name', help="Name of the delay bdev", required=True)
+    p.add_argument('-r', '--read-latency-upper',
+                   help="upperbound of read latency (in microseconds)", required=True, type=int)
+    p.add_argument('-l', '--read-latency-lower',
+                   help="lowerbound of read latency (in microseconds)", required=True, type=int)
+    p.add_argument('-w', '--write-latency-upper',
+                   help="upperbound of write latency (in microseconds)", required=True, type=int)
+    p.add_argument('-t', '--write-latency-lower',
+                   help="lowerbound of write latency (in microseconds)", required=True, type=int)
+    p.set_defaults(func=bdev_congctrl_create)
+
+    def bdev_congctrl_delete(args):
+        rpc.bdev.bdev_congctrl_delete(args.client,
+                                   name=args.name)
+
+    p = subparsers.add_parser('bdev_congctrl_delete', help='Delete a congctrl bdev')
+    p.add_argument('name', help='congctrl bdev name')
+    p.set_defaults(func=bdev_congctrl_delete)
+
+    def bdev_congctrl_update_latency(args):
+        print_json(rpc.bdev.bdev_congctrl_update_latency(args.client,
+                                                      congctrl_bdev_name=args.congctrl_bdev_name,
+                                                      latency_type=args.latency_type,
+                                                      latency_upper=args.latency_upper,
+                                                      latency_lower=args.latency_lower))
+    p = subparsers.add_parser('bdev_congctrl_update_latency',
+                              help='Update the latency params for a given congctrl bdev')
+    p.add_argument('congctrl_bdev_name', help='The name of the given congctrl bdev')
+    p.add_argument('latency_type', help='one of: latency_upper, latency_lower. No other values accepted.')
+    p.add_argument('latency_upper', help='new latency value in microseconds.', type=int)
+    p.add_argument('latency_lower', help='new latency value in microseconds.', type=int)
+    p.set_defaults(func=bdev_congctrl_update_latency)
+
     def bdev_error_create(args):
         print_json(rpc.bdev.bdev_error_create(args.client,
                                               base_name=args.base_name))

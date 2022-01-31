@@ -960,6 +960,60 @@ def bdev_delay_update_latency(client, delay_bdev_name, latency_type, latency_us)
     }
     return client.call('bdev_delay_update_latency', params)
 
+def bdev_congctrl_create(client, base_bdev_name, name, upper_read_latency, lower_read_latency, upper_write_latency, lower_write_latency):
+    """Construct a congctrl block device.
+
+    Args:
+        base_bdev_name: name of the existing bdev
+        name: name of block device
+        upper_read_latency: Desired upperbound read latency.
+        lower_read_latency: Desired lowerbound read latency
+        upper_write_latency: Desired upperbound write latency.
+        lower_write_latency: Desired lowerbound write latency
+
+    Returns:
+        Name of created block device.
+    """
+    params = {
+        'base_bdev_name': base_bdev_name,
+        'name': name,
+        'upper_read_latency': upper_read_latency,
+        'lower_read_latency': lower_read_latency,
+        'upper_write_latency': upper_write_latency,
+        'lower_write_latency': lower_write_latency,
+    }
+    return client.call('bdev_congctrl_create', params)
+
+
+def bdev_congctrl_delete(client, name):
+    """Remove congctrl bdev from the system.
+
+    Args:
+        name: name of congctrl bdev to delete
+    """
+    params = {'name': name}
+    return client.call('bdev_congctrl_delete', params)
+
+
+def bdev_congctrl_update_latency(client, congctrl_bdev_name, latency_type, latency_us):
+    """Update the latency value for a congctrl block device
+
+    Args:
+        congctrl_bdev_name: name of the congctrl bdev
+        latency_type: 'one of: read, write. No other values accepted.'
+        latency_upper_us: 'new latency value.'
+        latency_lower_us: 'new latency value.'
+
+    Returns:
+        True if successful, or a specific error otherwise.
+    """
+    params = {
+        'congctrl_bdev_name': congctrl_bdev_name,
+        'latency_type': latency_type,
+        'latency_upper_us': latency_upper_us,
+        'latency_lower_us': latency_lower_us,
+    }
+    return client.call('bdev_congctrl_update_latency', params)
 
 @deprecated_alias('delete_error_bdev')
 def bdev_error_delete(client, name):

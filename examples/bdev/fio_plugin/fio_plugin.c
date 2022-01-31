@@ -803,7 +803,7 @@ spdk_fio_queue(struct thread_data *td, struct io_u *io_u)
 		break;
 	}
 
-	if (rc == -ENOMEM) {
+	if (rc == -ENOMEM || rc == -EAGAIN) {
 		return FIO_Q_BUSY;
 	}
 
