@@ -304,15 +304,15 @@ static inline void
 _congctrl_cong_token_update(struct congctrl_cong *cong, int cong_res, uint64_t iolen) 
 {
 	if (cong_res == SPDK_NVME_CC_RATE_OVERLOADED) {
-		//cong->tokens = 0;
-		cong->rate -= iolen;
-		//cong->rate -= 8*iolen;
+		cong->tokens = 0;
+		//cong->rate -= iolen;
+		cong->rate -= 16*iolen;
 		//cong->rate = cong->rate*95/100;
 	} else if (cong_res == SPDK_NVME_CC_RATE_CONGESTION) {
 		cong->rate -= iolen;
 	} else if (cong_res == SPDK_NVME_CC_RATE_SLOWSTART) {
-		cong->rate += 8*iolen;
-		//cong->rate += iolen;
+		//cong->rate += 8*iolen;
+		cong->rate += iolen;
 	} else {
 		cong->rate += iolen;
 	}
@@ -438,19 +438,17 @@ _congctrl_cong_top(void *arg)
 		win_bw = congctrl_ch->rd_cong.total_bytes * SPDK_SEC_TO_USEC / 1000000;
 		win_cap = congctrl_ch->rd_cong.total_bytes * SPDK_SEC_TO_USEC / congctrl_ch->rd_cong.total_lat_ticks;
 	}
-	//printf("ch:%p r_rate:%ld r_ewma:%llu r_thresh:%llu r_token:%lu win_lat:%lu win_bw:%lu win_cap:%lu\n",
+	/*
 	printf("ch:%p r_rate:%ld r_ewma:%llu r_thresh:%llu r_token:%lu win_bw:%lu\n",
 			congctrl_ch,
 			congctrl_ch->rd_cong.rate>>20,
 			congctrl_ch->rd_cong.ewma_ticks*SPDK_SEC_TO_USEC/spdk_get_ticks_hz(),
 			congctrl_ch->rd_cong.thresh_ticks*SPDK_SEC_TO_USEC/spdk_get_ticks_hz(),
 			congctrl_ch->rd_cong.tokens>>10,
-			//win_lat,
 			win_bw >> 20
-			//win_cap
 			);
-
-	/*
+	*/
+	
 	printf("ch:%p r_rate:%ld r_ewma:%llu r_thresh:%llu r_token:%lu w_rate:%ld w_ewma:%llu w_thresh:%llu w_token:%lu\n",
 			congctrl_ch,
 			congctrl_ch->rd_cong.rate>>20,
@@ -461,7 +459,7 @@ _congctrl_cong_top(void *arg)
 			congctrl_ch->wr_cong.ewma_ticks*SPDK_SEC_TO_USEC/spdk_get_ticks_hz(),
 			congctrl_ch->wr_cong.thresh_ticks*SPDK_SEC_TO_USEC/spdk_get_ticks_hz(),
 			congctrl_ch->wr_cong.tokens>>10);
-	*/
+	
 	congctrl_ch->rd_cong.total_lat_ticks = 0;
 	congctrl_ch->rd_cong.total_io = 0;
 	congctrl_ch->rd_cong.total_bytes = 0;
