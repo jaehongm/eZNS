@@ -726,10 +726,14 @@ spdk_fio_completion_cb(struct spdk_bdev_io *bdev_io,
 	struct spdk_fio_request		*fio_req = cb_arg;
 	struct thread_data		*td = fio_req->td;
 	struct spdk_fio_thread		*fio_thread = td->io_ops_data;
+	int aio_result;
 
 	assert(fio_thread->iocq_count < fio_thread->iocq_size);
-	fio_req->io->error = success ? 0 : EIO;
+	spdk_bdev_io_get_aio_status(bdev_io, &aio_result);
+	fio_req->io->error = -aio_result;
+	//fio_req->io->error = success ? 0 : EIO;
 	fio_thread->iocq[fio_thread->iocq_count++] = fio_req->io;
+	
 
 	spdk_bdev_free_io(bdev_io);
 }
@@ -756,7 +760,7 @@ spdk_fio_queue(struct thread_data *td, struct io_u *io_u)
 	int rc = 1;
 	struct spdk_fio_request	*fio_req = io_u->engine_data;
 	struct spdk_fio_target *target = io_u->file->engine_data;
-
+	
 	assert(fio_req->td == td);
 
 	if (!target) {

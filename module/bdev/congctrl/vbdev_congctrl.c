@@ -763,6 +763,16 @@ vbdev_congctrl_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *b
 							bdev_io);
 		}
 		break;
+	case SPDK_BDEV_IO_TYPE_GET_ZONE_INFO:
+		rc = spdk_bdev_get_zone_info(congctrl_node->base_desc, congctrl_ch->base_ch,
+						bdev_io->u.zone_mgmt.zone_id, bdev_io->u.zone_mgmt.num_zones,
+						bdev_io->u.zone_mgmt.buf, _congctrl_complete_io, bdev_io);
+		break;
+	case SPDK_BDEV_IO_TYPE_ZONE_MANAGEMENT:
+		rc = spdk_bdev_zone_management(congctrl_node->base_desc, congctrl_ch->base_ch,
+						bdev_io->u.zone_mgmt.zone_id, bdev_io->u.zone_mgmt.zone_action,
+						_congctrl_complete_io, bdev_io);
+		break;
 	case SPDK_BDEV_IO_TYPE_UNMAP:
 		rc = spdk_bdev_unmap_blocks(congctrl_node->base_desc, congctrl_ch->base_ch,
 					    bdev_io->u.bdev.offset_blocks,
@@ -792,7 +802,9 @@ vbdev_congctrl_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *b
 	}
 
 	if (rc == -EAGAIN) {
-		vbdev_congctrl_cong_io_wait(bdev_io);
+		//vbdev_congctrl_cong_io_wait(bdev_io);
+		bdev_io->internal.error.aio_result = rc;
+		spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_AIO_ERROR);
 	} else if (rc == -ENOMEM) {
 		SPDK_ERRLOG("No memory, start to queue io for congctrl.\n");
 		vbdev_congctrl_queue_io(bdev_io);
@@ -1121,6 +1133,15 @@ vbdev_congctrl_register(const char *bdev_name)
 		congctrl_node->congctrl_bdev.optimal_io_boundary = bdev->optimal_io_boundary;
 		congctrl_node->congctrl_bdev.blocklen = bdev->blocklen;
 		congctrl_node->congctrl_bdev.blockcnt = bdev->blockcnt;
+
+		if (spdk_bdev_is_zoned(bdev)) {
+			congctrl_node->congctrl_bdev.zoned = true;
+			congctrl_node->congctrl_bdev.zone_size = bdev->zone_size;
+			congctrl_node->congctrl_bdev.max_zone_append_size = bdev->max_zone_append_size;
+			congctrl_node->congctrl_bdev.max_open_zones = bdev->max_open_zones;
+			congctrl_node->congctrl_bdev.max_active_zones = bdev->max_active_zones;
+			congctrl_node->congctrl_bdev.optimal_open_zones = bdev->optimal_open_zones;
+		}
 
 		congctrl_node->congctrl_bdev.ctxt = congctrl_node;
 		congctrl_node->congctrl_bdev.fn_table = &vbdev_congctrl_fn_table;
