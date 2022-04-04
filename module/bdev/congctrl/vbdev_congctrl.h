@@ -39,14 +39,31 @@
 #include "spdk/bdev.h"
 #include "spdk/bdev_module.h"
 
-enum congctrl_lat_type {
-	LATENCY_READ,
-	LATENCY_WRITE,
-	LATENCY_NONE
-};
+struct vbdev_congctrl;
 
 /**
- * Create new congctrl bdev.
+ * Create new congctrl ns.
+ *
+ * \param congctrl_name Name of the congctrl ctrl on which ns will be created.
+ * \param ns_name Name of the congctrl ns.
+ * \return 0 on success, other on failure.
+ */
+int create_congctrl_ns(const char *congctrl_name, const char *ns_name,
+					uint32_t zone_array_size, uint32_t stripe_size, uint32_t block_align);
+
+/**
+ * Delete congctrl ns.
+ *
+ * \param bdev Pointer to congctrl ns bdev.
+ * \param cb_fn Function to call after deletion.
+ * \param cb_arg Argument to pass to cb_fn.
+ */
+void delete_congctrl_ns(struct spdk_bdev *bdev, spdk_bdev_unregister_cb cb_fn,
+					void *cb_arg);
+
+
+/**
+ * Create new congctrl ctrl.
  *
  * \param bdev_name Bdev on which congctrl vbdev will be created.
  * \param vbdev_name Name of the congctrl bdev.
@@ -60,7 +77,7 @@ int create_congctrl_disk(const char *bdev_name, const char *vbdev_name, uint64_t
 		      uint64_t lower_read_latency, uint64_t upper_write_latency, uint64_t lower_write_latency);
 
 /**
- * Delete congctrl bdev.
+ * Delete congctrl ctrl.
  *
  * \param bdev Pointer to congctrl bdev.
  * \param cb_fn Function to call after deletion.
@@ -74,10 +91,10 @@ void delete_congctrl_disk(struct spdk_bdev *bdev, spdk_bdev_unregister_cb cb_fn,
  *
  * \param congctrl_name The name of the congctrl bdev
  * \param latency_us The new latency threshold value, in microseconds
- * \param type a valid value from the congctrl_lat_type enum
+ * \param type a valid value from the congctrl_io_type enum
  * \return 0 on success, -ENODEV if the bdev cannot be found, and -EINVAL if the bdev is not a congctrl device.
  */
 int vbdev_congctrl_update_latency_value(char *congctrl_name, uint64_t latency_upper, uint64_t latency_lower,
-				     enum congctrl_lat_type type);
+				     enum congctrl_io_type type);
 
 #endif /* SPDK_VBDEV_CONGCTRL_H */

@@ -907,6 +907,24 @@ if __name__ == "__main__":
     p.add_argument('latency_lower', help='new latency value in microseconds.', type=int)
     p.set_defaults(func=bdev_congctrl_update_latency)
 
+    def bdev_congctrl_ns_create(args):
+        rpc.bdev.bdev_congctrl_ns_create(args.client,
+                                   ns_name=args.ns_name, ctrl_name=args.ctrl_name)
+
+    p = subparsers.add_parser('bdev_congctrl_ns_create', help='Create a congctrl namespace bdev')
+    p.add_argument('ns_name', help='congctrl namespace bdev name')
+    p.add_argument('ctrl_name', help='base congctrl bdev name')
+    p.set_defaults(func=bdev_congctrl_ns_create)
+
+    def bdev_congctrl_ns_delete(args):
+        rpc.bdev.bdev_congctrl_ns_delete(args.client,
+                                   ns_name=args.ns_name, ctrl_name=args.ctrl_name)
+
+    p = subparsers.add_parser('bdev_congctrl_ns_delete', help='Delete a congctrl namespace bdev')
+    p.add_argument('ns_name', help='congctrl namespace bdev name')
+    p.add_argument('ctrl_name', help='base congctrl bdev name')
+    p.set_defaults(func=bdev_congctrl_ns_delete)
+
     def bdev_error_create(args):
         print_json(rpc.bdev.bdev_error_create(args.client,
                                               base_name=args.base_name))

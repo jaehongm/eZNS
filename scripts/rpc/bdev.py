@@ -1015,6 +1015,32 @@ def bdev_congctrl_update_latency(client, congctrl_bdev_name, latency_type, laten
     }
     return client.call('bdev_congctrl_update_latency', params)
 
+def bdev_congctrl_ns_create(client, ns_name, ctrl_name):
+    """Create congctrl namespace bdev from the system.
+
+    Args:
+        ns_name: name of namesapce bdev to create
+        ctrl_name: name of base congctrl bdev
+    """
+    params = {
+        'ns_name': ns_name,
+        'ctrl_name': ctrl_name
+    }
+    return client.call('bdev_congctrl_ns_create', params)
+
+def bdev_congctrl_ns_delete(client, ns_name, ctrl_name):
+    """Delete congctrl namespace bdev from the system.
+
+    Args:
+        ns_name: name of namesapce bdev to delete
+        ctrl_name: name of base congctrl bdev
+    """
+    params = {
+        'ns_name': ns_name,
+        'ctrl_name': ctrl_name
+    }
+    return client.call('bdev_congctrl_ns_delete', params)
+
 @deprecated_alias('delete_error_bdev')
 def bdev_error_delete(client, name):
     """Remove error bdev from the system.

@@ -32,6 +32,7 @@
  *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include "vbdev_congctrl_internal.h"
 #include "vbdev_congctrl.h"
 #include "spdk/rpc.h"
 #include "spdk/util.h"
@@ -41,14 +42,14 @@
 
 struct rpc_update_latency {
 	char *congctrl_bdev_name;
-	char *latency_type;
+	char *io_type;
 	uint64_t latency_upper;
 	uint64_t latency_lower;
 };
 
 static const struct spdk_json_object_decoder rpc_update_latency_decoders[] = {
 	{"congctrl_bdev_name", offsetof(struct rpc_update_latency, congctrl_bdev_name), spdk_json_decode_string},
-	{"latency_type", offsetof(struct rpc_update_latency, latency_type), spdk_json_decode_string},
+	{"io_type", offsetof(struct rpc_update_latency, io_type), spdk_json_decode_string},
 	{"latency_upper_us", offsetof(struct rpc_update_latency, latency_upper), spdk_json_decode_uint64},
 	{"latency_lower_us", offsetof(struct rpc_update_latency, latency_lower), spdk_json_decode_uint64}
 };
@@ -57,7 +58,7 @@ static void
 free_rpc_update_latency(struct rpc_update_latency *req)
 {
 	free(req->congctrl_bdev_name);
-	free(req->latency_type);
+	free(req->io_type);
 }
 
 static void
@@ -65,7 +66,7 @@ rpc_bdev_congctrl_update_latency(struct spdk_jsonrpc_request *request,
 			      const struct spdk_json_val *params)
 {
 	struct rpc_update_latency req = {NULL};
-	enum congctrl_lat_type latency_type;
+	enum congctrl_io_type io_type;
 	int rc = 0;
 
 	if (spdk_json_decode_object(params, rpc_update_latency_decoders,
@@ -77,17 +78,17 @@ rpc_bdev_congctrl_update_latency(struct spdk_jsonrpc_request *request,
 		goto cleanup;
 	}
 
-	if (!strncmp(req.latency_type, "read", 5)) {
-		latency_type = LATENCY_READ;
-	} else if (!strncmp(req.latency_type, "write", 6)) {
-		latency_type = LATENCY_WRITE;
+	if (!strncmp(req.io_type, "read", 5)) {
+		io_type = CONGCTRL_IO_READ;
+	} else if (!strncmp(req.io_type, "write", 6)) {
+		io_type = CONGCTRL_IO_WRITE;
 	} else {
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
 						 "Please specify a valid latency type.");
 		goto cleanup;
 	}
 
-	rc = vbdev_congctrl_update_latency_value(req.congctrl_bdev_name, req.latency_upper, req.latency_lower, latency_type);
+	rc = vbdev_congctrl_update_latency_value(req.congctrl_bdev_name, req.latency_upper, req.latency_lower, io_type);
 
 	if (rc == -ENODEV) {
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
@@ -118,7 +119,7 @@ struct rpc_construct_congctrl {
 };
 
 static void
-free_rpc_construct_delay(struct rpc_construct_congctrl *r)
+free_rpc_construct_congctrl(struct rpc_construct_congctrl *r)
 {
 	free(r->base_bdev_name);
 	free(r->name);
@@ -162,7 +163,7 @@ rpc_bdev_congctrl_create(struct spdk_jsonrpc_request *request,
 	spdk_jsonrpc_end_result(request, w);
 
 cleanup:
-	free_rpc_construct_delay(&req);
+	free_rpc_construct_congctrl(&req);
 }
 SPDK_RPC_REGISTER("bdev_congctrl_create", rpc_bdev_congctrl_create, SPDK_RPC_RUNTIME)
 
@@ -215,3 +216,112 @@ cleanup:
 	free_rpc_delete_congctrl(&req);
 }
 SPDK_RPC_REGISTER("bdev_congctrl_delete", rpc_bdev_congctrl_delete, SPDK_RPC_RUNTIME)
+
+struct rpc_construct_congctrl_ns {
+	char *ns_name;
+	char *ctrl_name;
+	uint32_t zone_array_size;
+	uint32_t stripe_size;
+	uint32_t block_align;
+};
+
+static void
+free_rpc_construct_congctrl_ns(struct rpc_construct_congctrl_ns *r)
+{
+	free(r->ns_name);
+	free(r->ctrl_name);
+}
+
+static const struct spdk_json_object_decoder rpc_construct_congctrl_ns_decoders[] = {
+	{"ns_name", offsetof(struct rpc_construct_congctrl_ns, ns_name), spdk_json_decode_string},
+	{"ctrl_name", offsetof(struct rpc_construct_congctrl_ns, ctrl_name), spdk_json_decode_string},
+	{"zone_array_size", offsetof(struct rpc_construct_congctrl_ns, zone_array_size), spdk_json_decode_uint32, true},
+	{"stripe_size", offsetof(struct rpc_construct_congctrl_ns, stripe_size), spdk_json_decode_uint32, true},
+	{"block_align", offsetof(struct rpc_construct_congctrl_ns, block_align), spdk_json_decode_uint32, true},
+};
+
+static void
+rpc_bdev_congctrl_ns_create(struct spdk_jsonrpc_request *request,
+		      const struct spdk_json_val *params)
+{
+	struct rpc_construct_congctrl_ns req = {NULL};
+	struct spdk_json_write_ctx *w;
+	int rc;
+
+	if (spdk_json_decode_object(params, rpc_construct_congctrl_ns_decoders,
+				    SPDK_COUNTOF(rpc_construct_congctrl_ns_decoders),
+				    &req)) {
+		SPDK_DEBUGLOG(vbdev_congctrl, "spdk_json_decode_object failed\n");
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
+						 "spdk_json_decode_object failed");
+		goto cleanup;
+	}
+
+	rc = create_congctrl_ns(req.ctrl_name, req.ns_name,
+							 req.zone_array_size, req.stripe_size, req.block_align);
+	if (rc != 0) {
+		spdk_jsonrpc_send_error_response(request, rc, spdk_strerror(-rc));
+		goto cleanup;
+	}
+
+	w = spdk_jsonrpc_begin_result(request);
+	spdk_json_write_string(w, req.ns_name);
+	spdk_jsonrpc_end_result(request, w);
+
+cleanup:
+	free_rpc_construct_congctrl_ns(&req);
+}
+SPDK_RPC_REGISTER("bdev_congctrl_ns_create", rpc_bdev_congctrl_ns_create, SPDK_RPC_RUNTIME)
+
+struct rpc_delete_congctrl_ns {
+	char *ns_name;
+	char *ctrl_name;
+};
+
+static void
+free_rpc_delete_congctrl_ns(struct rpc_delete_congctrl_ns *req)
+{
+	free(req->ns_name);
+	free(req->ctrl_name);
+}
+
+static const struct spdk_json_object_decoder rpc_delete_congctrl_ns_decoders[] = {
+	{"ns_name", offsetof(struct rpc_delete_congctrl_ns, ns_name), spdk_json_decode_string},
+	{"ctrl_name", offsetof(struct rpc_delete_congctrl_ns, ctrl_name), spdk_json_decode_string},
+};
+
+static void
+rpc_bdev_congctrl_ns_delete_cb(void *cb_arg, int bdeverrno)
+{
+	struct spdk_jsonrpc_request *request = cb_arg;
+
+	spdk_jsonrpc_send_bool_response(request, bdeverrno == 0);
+}
+
+static void
+rpc_bdev_congctrl_ns_delete(struct spdk_jsonrpc_request *request,
+		      const struct spdk_json_val *params)
+{
+	struct rpc_delete_congctrl_ns req = {NULL};
+	struct spdk_bdev *bdev;
+
+	if (spdk_json_decode_object(params, rpc_delete_congctrl_ns_decoders,
+				    SPDK_COUNTOF(rpc_delete_congctrl_ns_decoders),
+				    &req)) {
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
+						 "spdk_json_decode_object failed");
+		goto cleanup;
+	}
+
+	bdev = spdk_bdev_get_by_name(req.ctrl_name);
+	if (bdev == NULL) {
+		spdk_jsonrpc_send_error_response(request, -ENODEV, spdk_strerror(ENODEV));
+		goto cleanup;
+	}
+
+	delete_congctrl_ns(bdev, rpc_bdev_congctrl_ns_delete_cb, request);
+
+cleanup:
+	free_rpc_delete_congctrl_ns(&req);
+}
+SPDK_RPC_REGISTER("bdev_congctrl_ns_delete", rpc_bdev_congctrl_ns_delete, SPDK_RPC_RUNTIME)
