@@ -909,11 +909,25 @@ if __name__ == "__main__":
 
     def bdev_congctrl_ns_create(args):
         rpc.bdev.bdev_congctrl_ns_create(args.client,
-                                   ns_name=args.ns_name, ctrl_name=args.ctrl_name)
+                                   ns_name=args.ns_name, ctrl_name=args.ctrl_name,
+                                   zone_array_size=args.zone_array_size, stripe_size=args.stripe_size,
+                                   block_align=args.block_align, start_zone_id=args.start_zone_id,
+                                   num_phys_zones=args.num_phys_zones)
 
     p = subparsers.add_parser('bdev_congctrl_ns_create', help='Create a congctrl namespace bdev')
     p.add_argument('ns_name', help='congctrl namespace bdev name')
     p.add_argument('ctrl_name', help='base congctrl bdev name')
+    p.add_argument('-a', '--zone-array-size',
+                   help="number of phys zones in a logical zone", required=False, type=int)
+    p.add_argument('-s', '--stripe-size',
+                   help="I/O stripe size in blocks", required=False, type=int)
+    p.add_argument('-b', '--block-align',
+                   help="block align in bytes", required=False, type=int)
+    p.add_argument('-i', '--start-zone-id',
+                   help="start zone id of namespace", required=True, type=int)
+    p.add_argument('-n', '--num-phys-zones',
+                   help="size of namespace in phys zones", required=True, type=int)
+
     p.set_defaults(func=bdev_congctrl_ns_create)
 
     def bdev_congctrl_ns_delete(args):

@@ -49,7 +49,8 @@ struct vbdev_congctrl;
  * \return 0 on success, other on failure.
  */
 int create_congctrl_ns(const char *congctrl_name, const char *ns_name,
-					uint32_t zone_array_size, uint32_t stripe_size, uint32_t block_align);
+					uint32_t zone_array_size, uint32_t stripe_size, uint32_t block_align,
+					uint64_t start_zone_id, uint64_t num_phys_zones);
 
 /**
  * Delete congctrl ns.

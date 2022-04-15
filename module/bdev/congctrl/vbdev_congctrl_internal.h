@@ -66,7 +66,7 @@ struct congctrl_bdev_io {
 
 	uint64_t next_offset_blocks;
 	uint64_t remain_blocks;
-	uint32_t outstanding_split_ios;
+	uint32_t outstanding_stripe_ios;
 
 	struct spdk_io_channel *ch;
 	struct spdk_bdev_io_wait_entry bdev_io_wait;
@@ -87,7 +87,8 @@ struct congctrl_io_channel {
 	//struct congctrl_cong	rd_cong;
 	//struct congctrl_cong	wr_cong;
 
-	TAILQ_HEAD(, congctrl_bdev_io)	slidewin_wait_queue;
+	TAILQ_HEAD(, congctrl_bdev_io)	rd_slidewin_queue;
+	TAILQ_HEAD(, congctrl_bdev_io)	wr_slidewin_queue;
 	TAILQ_HEAD(, congctrl_bdev_io)	write_drr_queue;
 };
 
@@ -124,22 +125,54 @@ struct vbdev_congctrl_iosched_ops {
 	void	(*flush)(void *ctx);
  };
 
+enum vbdev_congctrl_ns_state {
+	VBDEV_CONGCTRL_NS_STATE_ACTIVE,
+	VBDEV_CONGCTRL_NS_STATE_CLOSE,
+	VBDEV_CONGCTRL_NS_STATE_PENDING
+};
 
+struct vbdev_congctrl_ns_zone_info {
+	uint64_t			base_zone_id;
+	uint64_t			write_pointer;
+	uint64_t			capacity;
+	enum spdk_bdev_zone_state	state;
+
+	enum spdk_bdev_zone_state	next_state; /* state to be transitioned next */
+	uint32_t 					next_wait_ios; /* number of outstanding transitions in base bdev */
+};
 
 struct vbdev_congctrl_ns {
 	void					*ctrl;
 	struct spdk_bdev		congctrl_ns_bdev;    /* the congctrl ns virtual bdev */
+	struct spdk_thread 		*thread;  /* thread where the namespace is opened */
+	
+	bool		active;
+	uint64_t	num_open_lzones;
+	uint64_t	base_zone_size;
 
 	// Namespace specific configuration parameters
-	uint32_t	zone_array_size; /* the nubmer of base zones in logical zone */
+	uint32_t	zone_array_size; /* the number of base zones in logical zone */
 	uint32_t	stripe_blocks; /* stripe size (in blocks) */
 	uint32_t	block_align;
 
+	uint64_t	start_zone_id;
+	uint64_t	num_phys_zones;
 	uint64_t	zcap;		// Logical Zone Capacity
 
-	TAILQ_ENTRY(vbdev_congctrl_ns)	link;
+	/**
+	 * Fields that are used internally by the mgmt bdev.
+	 * Namespace functions must not to write to these field directly.
+	 * Any function accesses these field should aquire lock first.
+	 */
+	struct __congctrl_ns_internal {
+		pthread_spinlock_t	lock;
+		enum vbdev_congctrl_ns_state ns_state;
+	} internal;
 
-	uint64_t zone_map[0];
+	TAILQ_ENTRY(vbdev_congctrl_ns)	link;
+	TAILQ_ENTRY(vbdev_congctrl_ns)	state_link;
+
+	struct vbdev_congctrl_ns_zone_info zone_info[0];
 };
 
 /* List of congctrl bdev ctrls and associated info for each. */
@@ -147,6 +180,7 @@ struct vbdev_congctrl {
 	struct spdk_bdev		*base_bdev; /* the thing we're attaching to */
 	struct spdk_bdev_desc	*base_desc; /* its descriptor we get from open */
 	struct spdk_bdev		mgmt_bdev;    /* the congctrl mgmt bdev */
+	struct spdk_io_channel  *mgmt_ch;	/* the congctrl mgmt channel */
 	
 	uint64_t			upper_read_latency; /* the upper read latency */
 	uint64_t			lower_read_latency; /* the lower read latency */
@@ -154,12 +188,34 @@ struct vbdev_congctrl {
 	uint64_t			lower_write_latency; /* the lower write latency */
 
 	uint64_t			claimed_blockcnt; /* claimed blocks by namespaces */
-	
+	uint64_t			num_open_states;		/* the number of open state zones granted to namespaces */ 
 	struct spdk_thread		*thread;    /* thread where base device is opened */
 
 	TAILQ_HEAD(, vbdev_congctrl_ns)	ns;
+	TAILQ_HEAD(, vbdev_congctrl_ns)	ns_active;
+	TAILQ_HEAD(, vbdev_congctrl_ns)	ns_pending;
 	TAILQ_ENTRY(vbdev_congctrl)	link;
 };
 
+struct vbdev_congctrl_ns_mgmt_io_ctx {
+	int status;
+	
+	uint32_t remain_ios;
+	uint32_t outstanding_mgmt_ios;
+
+	struct spdk_bdev_io 		*parent_io;
+	struct vbdev_congctrl_ns 	*congctrl_ns;
+};
+
+enum spdk_nvme_zns_specific_status_code {
+	SPDK_NVME_SC_ZONE_BOUNDARY_ERROR = 0xB8,
+	SPDK_NVME_SC_ZONE_IS_FULL		= 0xB9,
+	SPDK_NVME_SC_ZONE_IS_READONLY	= 0xBA,
+	SPDK_NVME_SC_ZONE_IS_OFFLINE	= 0xBB,
+	SPDK_NVME_SC_ZONE_INVALID_WRITE	= 0xBC,
+	SPDK_NVME_SC_ZONE_TOO_MANY_ACTIVE	= 0xBD,
+	SPDK_NVME_SC_ZONE_TOO_MANY_OPEN		= 0xBE,
+	SPDK_NVME_SC_ZONE_INVALID_STATE		= 0xBF
+};
 
 #endif /* SPDK_VBDEV_CONGCTRL_INTERNAL_H */

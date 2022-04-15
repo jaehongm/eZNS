@@ -223,6 +223,8 @@ struct rpc_construct_congctrl_ns {
 	uint32_t zone_array_size;
 	uint32_t stripe_size;
 	uint32_t block_align;
+	uint64_t start_zone_id;
+	uint64_t num_phys_zones;
 };
 
 static void
@@ -238,6 +240,8 @@ static const struct spdk_json_object_decoder rpc_construct_congctrl_ns_decoders[
 	{"zone_array_size", offsetof(struct rpc_construct_congctrl_ns, zone_array_size), spdk_json_decode_uint32, true},
 	{"stripe_size", offsetof(struct rpc_construct_congctrl_ns, stripe_size), spdk_json_decode_uint32, true},
 	{"block_align", offsetof(struct rpc_construct_congctrl_ns, block_align), spdk_json_decode_uint32, true},
+	{"start_zone_id", offsetof(struct rpc_construct_congctrl_ns, start_zone_id), spdk_json_decode_uint64, false},
+	{"num_phys_zones", offsetof(struct rpc_construct_congctrl_ns, num_phys_zones), spdk_json_decode_uint64, false},
 };
 
 static void
@@ -258,7 +262,8 @@ rpc_bdev_congctrl_ns_create(struct spdk_jsonrpc_request *request,
 	}
 
 	rc = create_congctrl_ns(req.ctrl_name, req.ns_name,
-							 req.zone_array_size, req.stripe_size, req.block_align);
+							 req.zone_array_size, req.stripe_size, req.block_align,
+							 req.start_zone_id, req.num_phys_zones);
 	if (rc != 0) {
 		spdk_jsonrpc_send_error_response(request, rc, spdk_strerror(-rc));
 		goto cleanup;
