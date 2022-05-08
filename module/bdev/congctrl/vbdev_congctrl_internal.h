@@ -86,6 +86,8 @@ struct congctrl_io_channel {
 	uint64_t	ch_lzslba;	/* current Logical ZSLBA (only one opened logical ZONE at a time) */
 	//struct congctrl_cong	rd_cong;
 	//struct congctrl_cong	wr_cong;
+	uint64_t	rd_avail_window;
+	uint64_t	wr_avail_window;
 
 	TAILQ_HEAD(, congctrl_bdev_io)	rd_slidewin_queue;
 	TAILQ_HEAD(, congctrl_bdev_io)	wr_slidewin_queue;
@@ -95,12 +97,12 @@ struct congctrl_io_channel {
 struct congctrl_mgmt_channel {
 	struct spdk_io_channel	*base_ch; /* IO channel of base device */
 
-	struct spdk_poller *top_poller;
 	struct spdk_poller *io_poller;
 };
 
 #define VBDEV_CONGCTRL_EWMA_PARAM 	  4	// Weight = 1/(2^VBDEV_CONGCTRL_EWMA_PARAM)
 #define VBDEV_CONGCTRL_LATHRES_EWMA_PARAM 4	// Weight = 1/(2^VBDEV_CONGCTRL_LATHRES_EWMA_PARAM)
+#define VBDEV_CONGCTRL_SLIDEWIN_MAX   (128*1024UL)
 
 enum vbdev_congctrl_rate_state {
 	VBDEV_CONGCTRL_RATE_SUBMITTABLE,
@@ -147,6 +149,7 @@ struct vbdev_congctrl_ns {
 	struct spdk_thread 		*thread;  /* thread where the namespace is opened */
 	
 	bool		active;
+	uint32_t	ref;
 	uint64_t	num_open_lzones;
 	uint64_t	base_zone_size;
 
@@ -155,8 +158,8 @@ struct vbdev_congctrl_ns {
 	uint32_t	stripe_blocks; /* stripe size (in blocks) */
 	uint32_t	block_align;
 
-	uint64_t	start_zone_id;
-	uint64_t	num_phys_zones;
+	uint64_t	start_base_zone_id;
+	uint64_t	num_base_zones;
 	uint64_t	zcap;		// Logical Zone Capacity
 
 	/**

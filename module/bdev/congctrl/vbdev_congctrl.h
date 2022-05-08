@@ -50,7 +50,7 @@ struct vbdev_congctrl;
  */
 int create_congctrl_ns(const char *congctrl_name, const char *ns_name,
 					uint32_t zone_array_size, uint32_t stripe_size, uint32_t block_align,
-					uint64_t start_zone_id, uint64_t num_phys_zones);
+					uint64_t start_base_zone, uint64_t num_base_zones);
 
 /**
  * Delete congctrl ns.

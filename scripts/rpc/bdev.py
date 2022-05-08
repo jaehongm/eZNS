@@ -1016,7 +1016,7 @@ def bdev_congctrl_update_latency(client, congctrl_bdev_name, latency_type, laten
     return client.call('bdev_congctrl_update_latency', params)
 
 def bdev_congctrl_ns_create(client, ns_name, ctrl_name, zone_array_size,
-                         stripe_size, block_align, start_zone_id, num_phys_zones):
+                         stripe_size, block_align, start_base_zone, num_base_zones):
     """Create congctrl namespace bdev from the system.
 
     Args:
@@ -1025,8 +1025,8 @@ def bdev_congctrl_ns_create(client, ns_name, ctrl_name, zone_array_size,
         zone_array_size
         stripe_size
         block_align
-        start_zone_id
-        num_phys_zones
+        start_base_zone
+        num_base_zones
     """
     params = {
         'ns_name': ns_name,
@@ -1034,8 +1034,8 @@ def bdev_congctrl_ns_create(client, ns_name, ctrl_name, zone_array_size,
         'zone_array_size': zone_array_size,
         'stripe_size': stripe_size,
         'block_align': block_align,
-        'start_zone_id': start_zone_id,
-        'num_phys_zones': num_phys_zones,
+        'start_base_zone': start_base_zone,
+        'num_base_zones': num_base_zones,
     }
     return client.call('bdev_congctrl_ns_create', params)
 

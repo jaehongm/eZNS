@@ -87,8 +87,8 @@ struct ns_association {
 	uint32_t	stripe_size;
 	uint32_t	block_align;
 
-	uint64_t	start_zone_id;
-	uint64_t	num_phys_zones;
+	uint64_t	start_base_zone;
+	uint64_t	num_base_zones;
 
 	TAILQ_ENTRY(ns_association)	link;
 };
@@ -99,6 +99,7 @@ static TAILQ_HEAD(, ns_association) g_ns_associations = TAILQ_HEAD_INITIALIZER(
 static TAILQ_HEAD(, vbdev_congctrl) g_congctrl_nodes = TAILQ_HEAD_INITIALIZER(g_congctrl_nodes);
 
 static void vbdev_congctrl_ns_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io);
+static int _congctrl_ns_io_submit(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io);
 
 /* Callback for unregistering the IO device. */
 static void
@@ -178,6 +179,160 @@ vbdev_congctrl_destruct(void *ctx)
 	return 0;
 }
 
+
+static int
+_vbdev_congctrl_slidewin_empty(struct congctrl_bdev_io *io_ctx)
+{
+	struct congctrl_io_channel *congctrl_ch = spdk_io_channel_get_ctx(io_ctx->ch);
+
+	if (io_ctx->type == CONGCTRL_IO_READ) {
+		return TAILQ_EMPTY(&congctrl_ch->rd_slidewin_queue);
+	} else {
+		return TAILQ_EMPTY(&congctrl_ch->wr_slidewin_queue);
+	}
+}
+
+static void
+_vbdev_congctrl_slidewin_enqueue(struct congctrl_bdev_io *io_ctx)
+{
+	struct congctrl_io_channel *congctrl_ch = spdk_io_channel_get_ctx(io_ctx->ch);
+
+	if (io_ctx->type == CONGCTRL_IO_READ) {
+		TAILQ_INSERT_TAIL(&congctrl_ch->rd_slidewin_queue, io_ctx, link);
+	} else {
+		TAILQ_INSERT_TAIL(&congctrl_ch->wr_slidewin_queue, io_ctx, link);
+	}
+}
+
+static void
+_vbdev_congctrl_slidewin_requeue(struct congctrl_bdev_io *io_ctx)
+{
+	struct congctrl_io_channel *congctrl_ch = spdk_io_channel_get_ctx(io_ctx->ch);
+
+	if (io_ctx->type == CONGCTRL_IO_READ) {
+		TAILQ_INSERT_HEAD(&congctrl_ch->rd_slidewin_queue, io_ctx, link);
+	} else {
+		TAILQ_INSERT_HEAD(&congctrl_ch->wr_slidewin_queue, io_ctx, link);
+	}
+}
+
+static void *
+_vbdev_congctrl_slidewin_dequeue(struct congctrl_io_channel *congctrl_ch, enum congctrl_io_type type)
+{
+	struct congctrl_bdev_io *io_ctx;
+
+	if (type == CONGCTRL_IO_READ) {
+		io_ctx = TAILQ_FIRST(&congctrl_ch->rd_slidewin_queue);
+		if (io_ctx) {
+			TAILQ_REMOVE(&congctrl_ch->rd_slidewin_queue, io_ctx, link);
+		}
+	} else {
+		io_ctx = TAILQ_FIRST(&congctrl_ch->wr_slidewin_queue);
+		if (io_ctx) {
+			TAILQ_REMOVE(&congctrl_ch->wr_slidewin_queue, io_ctx, link);
+		}
+	}
+	return io_ctx;	
+}
+
+static void
+_vbdev_congctrl_slidewin_submit(struct congctrl_bdev_io *io_ctx, uint64_t submit_blks)
+{
+	struct congctrl_io_channel *congctrl_ch = spdk_io_channel_get_ctx(io_ctx->ch);
+
+	if (io_ctx->type == CONGCTRL_IO_READ) {
+		congctrl_ch->rd_avail_window -= submit_blks;
+	} else {
+		congctrl_ch->wr_avail_window -= submit_blks;
+	}
+}
+
+static void
+_vbdev_congctrl_slidewin_complete(struct congctrl_bdev_io *io_ctx, uint64_t cpl_blks)
+{
+	struct congctrl_io_channel *congctrl_ch = spdk_io_channel_get_ctx(io_ctx->ch);
+
+	if (io_ctx->type == CONGCTRL_IO_READ) {
+		congctrl_ch->rd_avail_window += cpl_blks;
+	} else {
+		congctrl_ch->wr_avail_window += cpl_blks;
+	}
+}
+
+static uint64_t
+_vbdev_congctrl_slidewin_avail(struct congctrl_bdev_io *io_ctx)
+{
+	struct congctrl_io_channel *congctrl_ch = spdk_io_channel_get_ctx(io_ctx->ch);
+
+	if (io_ctx->type == CONGCTRL_IO_READ) {
+		return congctrl_ch->rd_avail_window;
+	} else {
+		return congctrl_ch->wr_avail_window;
+	}
+}
+
+static void
+_vbdev_congctrl_slidewin_resched_read(void *arg)
+{
+	struct spdk_io_channel *ch = (struct spdk_io_channel *)arg;
+	struct congctrl_io_channel *congctrl_ch = spdk_io_channel_get_ctx(ch);
+	struct spdk_bdev_io		*bdev_io;
+	struct congctrl_bdev_io *io_ctx, *tmp_ctx;
+
+	while (congctrl_ch->rd_avail_window) {
+		io_ctx = _vbdev_congctrl_slidewin_dequeue(congctrl_ch, CONGCTRL_IO_READ);
+		if (io_ctx == NULL) {
+			break;
+		} else {
+			bdev_io = spdk_bdev_io_from_ctx(io_ctx);
+			if (_congctrl_ns_io_submit(ch, bdev_io) != 0) {
+				spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
+				break;
+			}
+		}
+	}
+}
+
+static void
+_vbdev_congctrl_slidewin_resched_write(void *arg)
+{
+	struct spdk_io_channel *ch = (struct spdk_io_channel *)arg;
+	struct congctrl_io_channel *congctrl_ch = spdk_io_channel_get_ctx(ch);
+	struct spdk_bdev_io		*bdev_io;
+	struct congctrl_bdev_io *io_ctx, *tmp_ctx;
+
+	while (congctrl_ch->wr_avail_window) {
+		io_ctx = _vbdev_congctrl_slidewin_dequeue(congctrl_ch, CONGCTRL_IO_WRITE);
+		if (io_ctx == NULL) {
+			break;
+		} else {
+			bdev_io = spdk_bdev_io_from_ctx(io_ctx);
+			if (_congctrl_ns_io_submit(ch, bdev_io) != 0) {
+				spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
+				break;
+			}
+		}
+	}
+}
+
+static void
+_vbdev_congctrl_slidewin_resume(void *arg)
+{
+	struct spdk_io_channel *ch = (struct spdk_io_channel *)arg;
+
+	_vbdev_congctrl_slidewin_resched_read(ch);
+	_vbdev_congctrl_slidewin_resched_write(ch);
+}
+
+static void
+_vbdev_congctrl_drr_io_wait(struct spdk_bdev_io *bdev_io)
+{
+	struct congctrl_bdev_io *io_ctx = (struct congctrl_bdev_io *)bdev_io->driver_ctx;
+	struct congctrl_io_channel *congctrl_ch = spdk_io_channel_get_ctx(io_ctx->ch);
+
+	TAILQ_INSERT_TAIL(&congctrl_ch->write_drr_queue, io_ctx, link);
+}
+
 static inline void
 _congctrl_cong_init(struct congctrl_sched *sched, struct vbdev_congctrl *congctrl_node)
 {
@@ -201,25 +356,6 @@ _congctrl_sched_latency_check(struct congctrl_sched *sched, uint64_t iolen, uint
 }
 
 static int
-_resubmit_io_tailq(void *arg)
-{
-	TAILQ_HEAD(, congctrl_bdev_io) *head = arg;
-	struct congctrl_bdev_io *entry, *tmp;
-	int submissions = 0;
-
-	// TODO:
-	return submissions;
-}
-
-static int
-_congctrl_cong_top(void *arg)
-{
-	struct congctrl_io_channel *congctrl_ch = arg;
-
-	return SPDK_POLLER_IDLE;
-}
-
-static int
 _congctrl_cong_update(void *arg)
 {
 	struct congctrl_io_channel *congctrl_ch = arg;
@@ -227,8 +363,6 @@ _congctrl_cong_update(void *arg)
 	int submissions = 0;
 
 	//TODO: Update DRR scheduling and enqueue available I/Os to the sliding windows scheduling
-	//submissions += _resubmit_io_tailq(&congctrl_ch->read_io_wait_queue);
-	//submissions += _resubmit_io_tailq(&congctrl_ch->write_io_wait_queue);
 
 	return submissions == 0 ? SPDK_POLLER_IDLE : SPDK_POLLER_BUSY;
 }
@@ -237,13 +371,13 @@ static inline uint64_t
 _vbdev_congctrl_get_base_offset(struct vbdev_congctrl_ns *congctrl_ns, uint64_t lba)
 {
 	struct vbdev_congctrl *congctrl_node = congctrl_ns->ctrl;
-	//printf("phys_slba:%lu base_slba_off:%lu stripe_off:%lu lba_off:%lu\n", congctrl_ns->start_zone_id +
+	//printf("phys_slba:%lu base_slba_off:%lu stripe_off:%lu lba_off:%lu\n", congctrl_ns->start_base_zone_id +
 	//		(lba / congctrl_ns->congctrl_ns_bdev.zone_size) * (congctrl_ns->zone_array_size * congctrl_ns->base_zone_size),
 	//		((((lba % congctrl_ns->congctrl_ns_bdev.zone_size) / congctrl_ns->stripe_blocks)) % congctrl_ns->zone_array_size) * congctrl_ns->base_zone_size,
 	//		((lba % congctrl_ns->congctrl_ns_bdev.zone_size) / (congctrl_ns->zone_array_size * congctrl_ns->stripe_blocks)) * congctrl_ns->stripe_blocks,
 	//		lba % congctrl_ns->stripe_blocks);
 	// TODO: use shift operator
-	return congctrl_ns->start_zone_id
+	return congctrl_ns->start_base_zone_id
 			+ (lba / congctrl_ns->congctrl_ns_bdev.zone_size) * (congctrl_ns->zone_array_size * congctrl_ns->base_zone_size) // phys slba of lzone
 			+ ((((lba % congctrl_ns->congctrl_ns_bdev.zone_size) / congctrl_ns->stripe_blocks)) % congctrl_ns->zone_array_size) * congctrl_ns->base_zone_size // base slba offset from phy slba of lzone
 			+ ((lba % congctrl_ns->congctrl_ns_bdev.zone_size) / (congctrl_ns->zone_array_size * congctrl_ns->stripe_blocks)) * congctrl_ns->stripe_blocks // stripe offset in base phys zone
@@ -262,7 +396,7 @@ static inline uint64_t
 _vbdev_congctrl_get_lzone_idx_by_phys(struct vbdev_congctrl_ns *congctrl_ns, uint64_t lba)
 {
 	// TODO: use shift operator
-	return ((lba - congctrl_ns->start_zone_id) / congctrl_ns->base_zone_size) / congctrl_ns->zone_array_size;
+	return ((lba - congctrl_ns->start_base_zone_id) / congctrl_ns->base_zone_size) / congctrl_ns->zone_array_size;
 }
 
 static inline void
@@ -306,8 +440,13 @@ _congctrl_ns_complete_io(struct spdk_bdev_io *bdev_io, bool success, void *cb_ar
 		io_ctx->completion_tick = spdk_get_ticks();
 	}
 
-	// TODO: Move sliding window
-	//_congctrl_slidewin_(io_ctx->cong, io_ctx->completion_tick, iolen);
+	_vbdev_congctrl_slidewin_complete(io_ctx, bdev_io->u.bdev.num_blocks);
+	if (!_vbdev_congctrl_slidewin_empty(io_ctx)) {
+		spdk_thread_send_msg(spdk_bdev_io_get_thread(bdev_io),
+				 (io_ctx->type == CONGCTRL_IO_READ) ?
+				 		 _vbdev_congctrl_slidewin_resched_read : _vbdev_congctrl_slidewin_resched_write,
+				 io_ctx->ch);
+	}
 
 	assert(io_ctx->outstanding_stripe_ios);
 	io_ctx->outstanding_stripe_ios--;
@@ -360,36 +499,6 @@ vbdev_congctrl_queue_io(struct spdk_bdev_io *bdev_io)
 	io_ctx->bdev_io_wait.cb_arg = bdev_io;
 
 	return spdk_bdev_queue_io_wait(bdev_io->bdev, congctrl_ch->base_ch, &io_ctx->bdev_io_wait);
-}
-
-static void
-_vbdev_congctrl_slidewin_io_wait(struct spdk_bdev_io *bdev_io)
-{
-	struct congctrl_bdev_io *io_ctx = (struct congctrl_bdev_io *)bdev_io->driver_ctx;
-	struct congctrl_io_channel *congctrl_ch = spdk_io_channel_get_ctx(io_ctx->ch);
-
-	if (io_ctx->type == CONGCTRL_IO_READ) {
-		TAILQ_INSERT_TAIL(&congctrl_ch->rd_slidewin_queue, io_ctx, link);
-	} else {
-		TAILQ_INSERT_TAIL(&congctrl_ch->wr_slidewin_queue, io_ctx, link);
-	}	
-}
-
-static void
-_vbdev_congctrl_drr_io_wait(struct spdk_bdev_io *bdev_io)
-{
-	struct congctrl_bdev_io *io_ctx = (struct congctrl_bdev_io *)bdev_io->driver_ctx;
-	struct congctrl_io_channel *congctrl_ch = spdk_io_channel_get_ctx(io_ctx->ch);
-
-	TAILQ_INSERT_TAIL(&congctrl_ch->write_drr_queue, io_ctx, link);
-}
-
-static void
-_vbdev_congctrl_ns_resubmit_io(void *arg)
-{
-	struct vbdev_congctrl_ns *congctrl_ns = (struct vbdev_congctrl_ns *)arg;
-
-	return;
 }
 
 static int
@@ -454,8 +563,13 @@ _vbdev_congctrl_ns_lzone_recv(struct vbdev_congctrl_ns *congctrl_ns,
 }
 
 static void
-_vbdev_congctrl_ns_lzone_notify(void *arg)
+_vbdev_congctrl_ns_lzone_notify(struct spdk_io_channel_iter *i)
 {
+	struct spdk_io_channel *ch = spdk_io_channel_iter_get_channel(i);
+	struct congctrl_io_channel *congctrl_ch = spdk_io_channel_get_ctx(ch);
+
+	_vbdev_congctrl_slidewin_resume(ch);
+	spdk_for_each_channel_continue(i, 0);
 
 }
 
@@ -497,7 +611,7 @@ _vbdev_congctrl_get_zone_resource(void *arg)
 	}
 	pthread_spin_unlock(&congctrl_ns->internal.lock);
 	if (do_notification) {
-		spdk_thread_send_msg(congctrl_ns->thread, _vbdev_congctrl_ns_resubmit_io, congctrl_ns);
+		spdk_for_each_channel(congctrl_ns, _vbdev_congctrl_ns_lzone_notify, NULL, NULL);
 	}
 }
 
@@ -962,103 +1076,115 @@ error_complete:
 	return 0;
 }
 
-static void
-//_congctrl_ns_read_get_buf_cb(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io, bool success)
-_congctrl_ns_rw_cb(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io, bool success)
+static int
+_congctrl_ns_io_submit(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io)
 {
 	struct vbdev_congctrl_ns *congctrl_ns = SPDK_CONTAINEROF(bdev_io->bdev, struct vbdev_congctrl_ns,
 					 congctrl_ns_bdev);
 	struct vbdev_congctrl *congctrl_node = congctrl_ns->ctrl;
 	struct congctrl_io_channel *congctrl_ch = spdk_io_channel_get_ctx(ch);
 	struct congctrl_bdev_io *io_ctx = (struct congctrl_bdev_io *)bdev_io->driver_ctx;
+
 	int rc = 0;
 	uint64_t lzslba;		// Logical Zone Start LBA
 	uint64_t lz_stripe_idx;
 	uint64_t zone_array_id, lz_offset_blocks;
 	uint64_t remain_stripe_blocks;
 	uint64_t io_offset_blocks;
-	uint64_t base_zone_zslba, base_zone_offset, base_zone_num_blocks;
+	uint64_t base_zone_zslba, base_zone_offset, blks_to_submit;
+	int iov_idx;
+	uint64_t iov_offset;
 
-	if (!success) {
-		spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
-		return;
-	}
+	iov_idx = 0;
+	iov_offset = 0;
 
 	while (io_ctx->remain_blocks) {
 		// TODO: use '&' operator rather than '%'
-		/*
-		lzslba = io_ctx->next_offset_blocks % congctrl_ns->congctrl_ns_bdev.zone_size;
-		zone_array_id = _vbdev_congctrl_get_lzone_idx(congctrl_ns, lzslba);
+		if (io_ctx->next_offset_blocks % congctrl_ns->congctrl_ns_bdev.zone_size > congctrl_ns->zcap) {
+			if (bdev_io->type == SPDK_BDEV_IO_TYPE_WRITE) {
+				return -EINVAL; // TODO: this should be checked before entering this cb function
+			}
+			// Currently, we return zeroes for a range beyond ZCAP (SPDK_NVME_DEALLOC_READ_00)
+			// TODO: behavior should match with the device (i.e., DLFEAT bit)
+			blks_to_submit = spdk_min(congctrl_ns->congctrl_ns_bdev.zone_size - 
+							 (io_ctx->next_offset_blocks % congctrl_ns->congctrl_ns_bdev.zone_size),
+							 bdev_io->u.bdev.iovs[iov_idx].iov_len - iov_offset);
+			if (spdk_unlikely(blks_to_submit > io_ctx->remain_blocks)) {
+				blks_to_submit = io_ctx->remain_blocks;
+			}
+			memset(bdev_io->u.bdev.iovs[iov_idx].iov_base + iov_offset,
+						 SPDK_NVME_DEALLOC_READ_00, blks_to_submit);
+			rc = 0;
+		} else {
+			blks_to_submit = spdk_min(_vbdev_congctrl_slidewin_avail(io_ctx), io_ctx->remain_blocks);
+			if (blks_to_submit == 0) {
+				rc = -EAGAIN;
+				break;
+			}
+			io_offset_blocks = _vbdev_congctrl_get_base_offset(congctrl_ns, io_ctx->next_offset_blocks);
+			blks_to_submit = spdk_min(blks_to_submit, 
+							congctrl_ns->stripe_blocks - (io_offset_blocks % congctrl_ns->stripe_blocks));
+			
+			// We reuse allocated iovs instead of trying to get new one. 
+			// It is likely aligned with the stripes
+			if (spdk_unlikely(blks_to_submit > bdev_io->u.bdev.iovs[iov_idx].iov_len - iov_offset)) {
+				blks_to_submit = bdev_io->u.bdev.iovs[iov_idx].iov_len - iov_offset;
+			}
 
-		lz_offset_blocks = io_ctx->next_offset_blocks - lzslba;
-		lz_stripe_idx = lz_offset_blocks / congctrl_ns->stripe_blocks;
+			/* TODO: check if write io exceeds the zone size (ZSZE)
+			* If so, we do followings.
+			* 1. When no current open zone, just open new logical zone
+			* 2. If there is open zone and its write ptr is not at the end, return error
+			* Note: write ptr updates only if the I/O completes. 
+			*/
 
-		// this base_zone_zslba currently works for the case when ZCAP != ZSZE on the base ZNS bdev
-		// base zone ZSLBA of logical io offset
-		base_zone_zslba = congctrl_ns->zone_info[zone_array_id].base_zone_id +
-						 (lz_stripe_idx % congctrl_ns->zone_array_size) * congctrl_ns->congctrl_ns_bdev.zone_size;
-		base_zone_offset = (lz_stripe_idx / congctrl_ns->zone_array_size) * congctrl_ns->stripe_blocks; // base zone internal offset
+			// TODO: check if this namespace blocklen is not equal to the base blocklen.
+			// congctrl_ns_bdev.phys_blocklen != congctrl_ns_bdev.blocklen
+			// If so, convert it here
+			//printf("id:%u length:%lu org_offset:%lu phy_offset:%lu\n", congctrl_ch->ch_id, bdev_io->u.bdev.num_blocks, bdev_io->u.bdev.offset_blocks, io_offset_blocks);
+			//printf("next_offset_blocks: %lu remain_blocks: %lu\n", io_ctx->next_offset_blocks, io_ctx->remain_blocks);
+			//printf("zone_size: %lu stripe_blocks: %u zone_array_size: %u\n", congctrl_ns->congctrl_ns_bdev.zone_size, congctrl_ns->stripe_blocks, congctrl_ns->zone_array_size);
+			//printf("lzslba: %lu zone_array_id: %lu lz_offset_blocks: %lu lz_stripe_idx: %lu base_zone_zslba: %lu remain_stripe_blocks: %lu\n", lzslba, zone_array_id, lz_offset_blocks, lz_stripe_idx, base_zone_zslba, remain_stripe_blocks);
+			//printf("offset: %lu blocks: %lu org_offset:%lu org_blocks:%lu\n", io_offset_blocks, base_zone_num_blocks, bdev_io->u.bdev.offset_blocks, bdev_io->u.bdev.num_blocks);
 
-		io_offset_blocks = base_zone_zslba + base_zone_offset;
-		*/
-		io_offset_blocks = _vbdev_congctrl_get_base_offset(congctrl_ns, io_ctx->next_offset_blocks);
-		remain_stripe_blocks = congctrl_ns->stripe_blocks - (io_offset_blocks % congctrl_ns->stripe_blocks);
-		base_zone_num_blocks = io_ctx->remain_blocks > remain_stripe_blocks ?
-								remain_stripe_blocks : io_ctx->remain_blocks;
+			assert(blks_to_submit>0);
 
-		// TODO: check if read io exceeds the zone capacity boundary (ZCAP)
-		// If so, those LBAs should behave like deallocated LBAs. (here, return zeroes SPDK_NVME_DEALLOC_READ_00)
-		// thus, (io_offset_blocks + base_zone_num_blocks) should not exceed base bdev's ZCAP.
+			switch (bdev_io->type) {
+			case SPDK_BDEV_IO_TYPE_READ:
+				rc = spdk_bdev_read_blocks(congctrl_node->base_desc, congctrl_ch->base_ch,
+								bdev_io->u.bdev.iovs[iov_idx].iov_base + iov_offset,
+								io_offset_blocks, blks_to_submit, _congctrl_ns_complete_io,
+								bdev_io);
+				break;
+			case SPDK_BDEV_IO_TYPE_WRITE:
+				rc = spdk_bdev_write_blocks(congctrl_node->base_desc, congctrl_ch->base_ch,
+								bdev_io->u.bdev.iovs[iov_idx].iov_base + iov_offset,
+								io_offset_blocks, blks_to_submit, _congctrl_ns_complete_io,
+								bdev_io);
+				break;
+			case SPDK_BDEV_IO_TYPE_WRITE_ZEROES:
+				// TODO : we need to handel WRITE_ZEROES separately.
+				//rc = spdk_bdev_write_zeroes_blocks(congctrl_node->base_desc, congctrl_ch->base_ch,
+				//				io_offset_blocks, blks_to_submit,
+				//				_congctrl_ns_complete_io, bdev_io);
+				rc = -EINVAL;
+				break;
+			case SPDK_BDEV_IO_TYPE_ZONE_APPEND:
+				// TODO : we will support ZONE_APPEND but only for queueing and reordering purpose in the scheduler.
+				// thus, underlying base_bdev doesn't have to have the feature.
+				rc = -EINVAL;
+				break;
+			default:
+				rc = -EINVAL;
+				SPDK_ERRLOG("congctrl: unknown I/O type %d\n", bdev_io->type);
+				break;
 
-		/* TODO: check if write io exceeds the zone size (ZSZE)
-		 * If so, we do followings.
-		 * 1. When no current open zone, just open new logical zone
-		 * 2. If there is open zone and its write ptr is not at the end, return error
-		 * Note: write ptr updates only if the I/O completes. 
-		*/
+			}
 
-		// TODO: check if this namespace blocklen is not equal to the base blocklen.
-		// congctrl_ns_bdev.phys_blocklen != congctrl_ns_bdev.blocklen
-		// If so, convert it here
-
-		// TODO: In any case, copy u.bdev.iovs and manipulate for this I/O.
-		//printf("next_offset_blocks: %lu remain_blocks: %lu\n", io_ctx->next_offset_blocks, io_ctx->remain_blocks);
-		//printf("zone_size: %lu stripe_blocks: %u zone_array_size: %u\n", congctrl_ns->congctrl_ns_bdev.zone_size, congctrl_ns->stripe_blocks, congctrl_ns->zone_array_size);
-		//printf("lzslba: %lu zone_array_id: %lu lz_offset_blocks: %lu lz_stripe_idx: %lu base_zone_zslba: %lu remain_stripe_blocks: %lu\n", lzslba, zone_array_id, lz_offset_blocks, lz_stripe_idx, base_zone_zslba, remain_stripe_blocks);
-		//printf("offset: %lu blocks: %lu org_offset:%lu org_blocks:%lu\n", io_offset_blocks, base_zone_num_blocks, bdev_io->u.bdev.offset_blocks, bdev_io->u.bdev.num_blocks);
-
-		assert(base_zone_num_blocks>0);
-
-		switch (bdev_io->type) {
-		case SPDK_BDEV_IO_TYPE_READ:
-			rc = spdk_bdev_readv_blocks(congctrl_node->base_desc, congctrl_ch->base_ch, bdev_io->u.bdev.iovs,
-							bdev_io->u.bdev.iovcnt, io_offset_blocks,
-							base_zone_num_blocks, _congctrl_ns_complete_io,
-							bdev_io);
-			break;
-		case SPDK_BDEV_IO_TYPE_WRITE:
-			rc = spdk_bdev_writev_blocks(congctrl_node->base_desc, congctrl_ch->base_ch, bdev_io->u.bdev.iovs,
-							bdev_io->u.bdev.iovcnt, bdev_io->u.bdev.offset_blocks,
-							bdev_io->u.bdev.num_blocks, _congctrl_ns_complete_io,
-							bdev_io);
-			break;
-		case SPDK_BDEV_IO_TYPE_WRITE_ZEROES:
-			rc = spdk_bdev_write_zeroes_blocks(congctrl_node->base_desc, congctrl_ch->base_ch,
-							bdev_io->u.bdev.offset_blocks,
-							bdev_io->u.bdev.num_blocks,
-							_congctrl_ns_complete_io, bdev_io);
-			break;
-		case SPDK_BDEV_IO_TYPE_ZONE_APPEND:
-			rc = spdk_bdev_zone_appendv(congctrl_node->base_desc, congctrl_ch->base_ch, bdev_io->u.bdev.iovs,
-							bdev_io->u.bdev.iovcnt, bdev_io->u.bdev.offset_blocks,
-							bdev_io->u.bdev.num_blocks, _congctrl_ns_complete_io,
-							bdev_io);
-			break;
-		default:
-			rc = -EINVAL;
-			SPDK_ERRLOG("congctrl: unknown I/O type %d\n", bdev_io->type);
-			break;
-
+			if (rc == 0) {
+				io_ctx->outstanding_stripe_ios++;
+				_vbdev_congctrl_slidewin_submit(io_ctx, blks_to_submit);
+			}
 		}
 
 		if (rc == -ENOMEM) {
@@ -1073,21 +1199,50 @@ _congctrl_ns_rw_cb(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io, boo
 			// TODO: trace each I/O latency separately
 			// define child io array in io_ctx -> set latency tsc for each child io -> pass it as cb_arg for _congctrl_ns_complete_io
 			//io_ctx->submit_tick = spdk_get_ticks();
-			io_ctx->outstanding_stripe_ios++;
-			io_ctx->next_offset_blocks += base_zone_num_blocks;
-			assert(io_ctx->remain_blocks >= base_zone_num_blocks);
-			io_ctx->remain_blocks -= base_zone_num_blocks;
+			io_ctx->next_offset_blocks += blks_to_submit;
+			io_ctx->remain_blocks -= blks_to_submit;
+
+			iov_offset += blks_to_submit;
+			if (iov_offset == bdev_io->u.bdev.iovs[iov_idx].iov_len) {
+				iov_offset = 0;
+				iov_idx++;
+			}
 		}
 	}
 
-	return;
+	if (rc == -EAGAIN) {
+		_vbdev_congctrl_slidewin_requeue(io_ctx);
+	}
+	return 0;
 
 error_out:
 	io_ctx->remain_blocks = 0;
 	io_ctx->status = SPDK_BDEV_IO_STATUS_FAILED;
-	if (io_ctx->outstanding_stripe_ios == 0) {
+	if (io_ctx->outstanding_stripe_ios != 0) {
+		// defer error handling until all stripe ios complete
+		rc = 0;
+	}
+	return rc;
+}
+
+static void
+//_congctrl_ns_read_get_buf_cb(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io, bool success)
+_congctrl_ns_rw_cb(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io, bool success)
+{
+	struct congctrl_bdev_io *io_ctx = (struct congctrl_bdev_io *)bdev_io->driver_ctx;
+
+	if (!success) {
 		spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
 	}
+	
+	if (_vbdev_congctrl_slidewin_empty(io_ctx)) {
+		if (_congctrl_ns_io_submit(ch, bdev_io) != 0) {
+			spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
+		}
+	} else {
+		_vbdev_congctrl_slidewin_enqueue(io_ctx);	
+	}
+	return;
 }
 
 static void
@@ -1509,7 +1664,6 @@ congctrl_bdev_io_ch_create_cb(void *io_device, void *ctx_buf)
 	struct congctrl_io_channel *congctrl_ch = ctx_buf;
 	struct vbdev_congctrl_ns *congctrl_ns = io_device;
 	struct vbdev_congctrl *congctrl_node = congctrl_ns->ctrl;
-	struct spdk_io_channel *ch;
 
 	// currently, allow only single thread for the namespace
 	//if (congctrl_ns->thread && congctrl_ns->thread != spdk_get_thread()) {
@@ -1517,7 +1671,16 @@ congctrl_bdev_io_ch_create_cb(void *io_device, void *ctx_buf)
 	//}
 
 	congctrl_ch->base_ch = spdk_bdev_get_io_channel(congctrl_node->base_desc);
+	congctrl_ch->ch_id = ++congctrl_ns->ref;
+	//congctrl_ch->rd_avail_window = VBDEV_CONGCTRL_SLIDEWIN_MAX / congctrl_ns->congctrl_ns_bdev.blocklen;
+	congctrl_ch->rd_avail_window = congctrl_ns->stripe_blocks * congctrl_ns->zone_array_size;
+	//printf("rd_slidwin_size: %lu\n", congctrl_ch->rd_avail_window);
+	//congctrl_ch->rd_avail_window = 8;
+	congctrl_ch->wr_avail_window = VBDEV_CONGCTRL_SLIDEWIN_MAX / congctrl_ns->congctrl_ns_bdev.blocklen;
 
+	TAILQ_INIT(&congctrl_ch->rd_slidewin_queue);
+	TAILQ_INIT(&congctrl_ch->wr_slidewin_queue);
+	TAILQ_INIT(&congctrl_ch->write_drr_queue);
 	return 0;
 }
 
@@ -1528,7 +1691,6 @@ congctrl_bdev_mgmt_ch_create_cb(void *io_device, void *ctx_buf)
 	struct vbdev_congctrl *congctrl_node = io_device;
 
 	congctrl_mgmt_ch->io_poller = SPDK_POLLER_REGISTER(_congctrl_cong_update, congctrl_mgmt_ch, 100);
-	congctrl_mgmt_ch->top_poller = SPDK_POLLER_REGISTER(_congctrl_cong_top, congctrl_mgmt_ch, 1000000);
 	congctrl_mgmt_ch->base_ch = spdk_bdev_get_io_channel(congctrl_node->base_desc);
 
 	return 0;
@@ -1551,7 +1713,6 @@ congctrl_bdev_mgmt_ch_destroy_cb(void *io_device, void *ctx_buf)
 {
 	struct congctrl_mgmt_channel *congctrl_mgmt_ch = ctx_buf;
 
-	spdk_poller_unregister(&congctrl_mgmt_ch->top_poller);
 	spdk_poller_unregister(&congctrl_mgmt_ch->io_poller);
 	spdk_put_io_channel(congctrl_mgmt_ch->base_ch);
 }
@@ -1561,7 +1722,7 @@ congctrl_bdev_mgmt_ch_destroy_cb(void *io_device, void *ctx_buf)
 static int
 vbdev_congctrl_ns_insert_association(const char *congctrl_name, const char *ns_name,
 					uint32_t zone_array_size, uint32_t stripe_size, uint32_t block_align,
-					uint64_t start_zone_id, uint64_t num_phys_zones)
+					uint64_t start_base_zone, uint64_t num_base_zones)
 {
 	struct bdev_association *bdev_assoc;
 	struct ns_association *assoc;
@@ -1603,8 +1764,8 @@ vbdev_congctrl_ns_insert_association(const char *congctrl_name, const char *ns_n
 		assoc->zone_array_size = zone_array_size;
 		assoc->stripe_size = stripe_size;
 		assoc->block_align = block_align;
-		assoc->start_zone_id = start_zone_id;
-		assoc->num_phys_zones = num_phys_zones;
+		assoc->start_base_zone = start_base_zone;
+		assoc->num_base_zones = num_base_zones;
 		TAILQ_INSERT_TAIL(&g_ns_associations, assoc, link);
 
 		return 0;
@@ -1790,7 +1951,7 @@ vbdev_congctrl_ns_register(const char *ctrl_name, const char *ns_name)
 				}
 			}
 
-			total_lzones = assoc->zone_array_size ? assoc->num_phys_zones / assoc->zone_array_size : assoc->num_phys_zones;
+			total_lzones = assoc->zone_array_size ? assoc->num_base_zones / assoc->zone_array_size : assoc->num_base_zones;
 			if (total_lzones == 0) {
 				SPDK_ERRLOG("could not create zero sized congctrl namespace\n");
 				return -EINVAL;
@@ -1818,12 +1979,6 @@ vbdev_congctrl_ns_register(const char *ctrl_name, const char *ns_name)
 
 			congctrl_ns->congctrl_ns_bdev.zoned = true;
 
-			// Configure namespace specific parameters
-			// TODO: check if the namespace boundary overlap others
-			congctrl_ns->zone_array_size = assoc->zone_array_size ? assoc->zone_array_size : 1;
-			congctrl_ns->start_zone_id = assoc->start_zone_id;
-			congctrl_ns->num_phys_zones = assoc->num_phys_zones;
-
 			if (assoc->stripe_size && (assoc->stripe_size % bdev->blocklen)) { 
 				rc = -EINVAL;
 				SPDK_ERRLOG("stripe size must be block size aligned\n");
@@ -1844,10 +1999,16 @@ vbdev_congctrl_ns_register(const char *ctrl_name, const char *ns_name)
 			congctrl_ns->congctrl_ns_bdev.optimal_io_boundary = bdev->optimal_io_boundary;
 
 			congctrl_ns->base_zone_size = bdev->zone_size;
+			// Configure namespace specific parameters
+			// TODO: check if the namespace boundary overlap others
+			congctrl_ns->zone_array_size = assoc->zone_array_size ? assoc->zone_array_size : 1;
+			congctrl_ns->start_base_zone_id = assoc->start_base_zone * bdev->zone_size;
+			congctrl_ns->num_base_zones = assoc->num_base_zones;
+
 			//TODO: should check base_bdev zone capacity
 			congctrl_ns->zcap = bdev->zone_size * congctrl_ns->zone_array_size;
-			congctrl_ns->congctrl_ns_bdev.zone_size = spdk_align64pow2(congctrl_ns->zcap);
-			//congctrl_ns->congctrl_ns_bdev.zone_size = bdev->zone_size * congctrl_ns->zone_array_size;
+			//congctrl_ns->congctrl_ns_bdev.zone_size = spdk_align64pow2(congctrl_ns->zcap);
+			congctrl_ns->congctrl_ns_bdev.zone_size = bdev->zone_size * congctrl_ns->zone_array_size;
 			congctrl_ns->congctrl_ns_bdev.required_alignment = bdev->required_alignment;
 			congctrl_ns->congctrl_ns_bdev.max_zone_append_size = bdev->max_zone_append_size;
 			congctrl_ns->congctrl_ns_bdev.max_open_zones = 1;
@@ -1857,11 +2018,10 @@ vbdev_congctrl_ns_register(const char *ctrl_name, const char *ns_name)
 			congctrl_ns->congctrl_ns_bdev.blocklen = bdev->blocklen;
 			// TODO: support configurable block length (blocklen)
 			//congctrl_ns->congctrl_ns_bdev.phys_blocklen = bdev->blocklen;
-			// TODO: support logical bdev size (blockcnt)
-			congctrl_ns->congctrl_ns_bdev.blockcnt = total_lzones * congctrl_ns->congctrl_ns_bdev.zone_size;
 
+			congctrl_ns->congctrl_ns_bdev.blockcnt = total_lzones * congctrl_ns->congctrl_ns_bdev.zone_size;
 			for (i=0; i < total_lzones; i++) {
-				congctrl_ns->zone_info[i].base_zone_id = congctrl_ns->start_zone_id + 
+				congctrl_ns->zone_info[i].base_zone_id = congctrl_ns->start_base_zone_id + 
 													  congctrl_ns->base_zone_size * congctrl_ns->zone_array_size * i;
 				congctrl_ns->zone_info[i].write_pointer = congctrl_ns->congctrl_ns_bdev.zone_size;
 				congctrl_ns->zone_info[i].capacity = congctrl_ns->zcap;
@@ -1959,6 +2119,7 @@ vbdev_congctrl_register(const char *bdev_name)
 		}
 		TAILQ_INIT(&congctrl_node->ns);
 		TAILQ_INIT(&congctrl_node->ns_active);
+		TAILQ_INIT(&congctrl_node->ns_pending);
 
 		// Create the congctrl mgmt_ns
 		congctrl_node->mgmt_bdev.name = strdup(assoc->vbdev_name);
@@ -2063,14 +2224,14 @@ error_close:
 int
 create_congctrl_ns(const char *congctrl_name, const char *ns_name,
 					uint32_t zone_array_size, uint32_t stripe_size, uint32_t block_align,
-					uint64_t start_zone_id, uint64_t num_phys_zones)
+					uint64_t start_base_zone, uint64_t num_base_zones)
 {
 	struct ns_association *assoc;
 	int rc = 0;
 
 	rc = vbdev_congctrl_ns_insert_association(congctrl_name, ns_name,
 										 zone_array_size, stripe_size, block_align,
-										 start_zone_id, num_phys_zones);
+										 start_base_zone, num_base_zones);
 	if (rc) {
 		return rc;
 	}
