@@ -95,8 +95,6 @@ struct congctrl_io_channel {
 };
 
 struct congctrl_mgmt_channel {
-	struct spdk_io_channel	*base_ch; /* IO channel of base device */
-
 	struct spdk_poller *io_poller;
 };
 
@@ -137,10 +135,10 @@ struct vbdev_congctrl_ns_zone_info {
 	uint64_t			base_zone_id;
 	uint64_t			write_pointer;
 	uint64_t			capacity;
+	uint32_t			pu_group;
 	enum spdk_bdev_zone_state	state;
 
 	enum spdk_bdev_zone_state	next_state; /* state to be transitioned next */
-	uint32_t 					next_wait_ios; /* number of outstanding transitions in base bdev */
 };
 
 struct vbdev_congctrl_ns {
@@ -185,11 +183,8 @@ struct vbdev_congctrl {
 	struct spdk_bdev		mgmt_bdev;    /* the congctrl mgmt bdev */
 	struct spdk_io_channel  *mgmt_ch;	/* the congctrl mgmt channel */
 	
-	uint64_t			upper_read_latency; /* the upper read latency */
-	uint64_t			lower_read_latency; /* the lower read latency */
-	uint64_t			upper_write_latency; /* the upper write latency */
-	uint64_t			lower_write_latency; /* the lower write latency */
-
+	uint32_t			num_pu;			  /* the number of parallel units (NAND dies) in the SSD */
+	uint64_t 			zone_alloc_cnt;		  /* zone allocation counter */ 
 	uint64_t			claimed_blockcnt; /* claimed blocks by namespaces */
 	uint64_t			num_open_states;		/* the number of open state zones granted to namespaces */ 
 	struct spdk_thread		*thread;    /* thread where base device is opened */
@@ -202,15 +197,33 @@ struct vbdev_congctrl {
 
 struct vbdev_congctrl_ns_mgmt_io_ctx {
 	int status;
-	
+
 	uint32_t remain_ios;
 	uint32_t outstanding_mgmt_ios;
 
+	struct {
+		/* First logical block of a zone */
+		uint64_t zone_id;
+
+		/* Number of zones */
+		uint32_t num_zones;
+
+		/* Used to change zoned device zone state */
+		enum spdk_bdev_zone_action zone_action;
+
+		/* The data buffer */
+		void *buf;
+	} zone_mgmt;
+
+	struct {
+		int sct;
+		int sc;
+	} nvme_status;
 	struct spdk_bdev_io 		*parent_io;
 	struct vbdev_congctrl_ns 	*congctrl_ns;
 };
 
-enum spdk_nvme_zns_specific_status_code {
+enum vbdev_congctrl_zns_specific_status_code {
 	SPDK_NVME_SC_ZONE_BOUNDARY_ERROR = 0xB8,
 	SPDK_NVME_SC_ZONE_IS_FULL		= 0xB9,
 	SPDK_NVME_SC_ZONE_IS_READONLY	= 0xBA,

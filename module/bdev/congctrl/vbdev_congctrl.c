@@ -68,10 +68,7 @@ SPDK_BDEV_MODULE_REGISTER(congctrl, &congctrl_if)
 struct bdev_association {
 	char			*vbdev_name;
 	char			*bdev_name;
-	uint64_t		upper_read_latency;
-	uint64_t		lower_read_latency;
-	uint64_t		upper_write_latency;
-	uint64_t		lower_write_latency;
+	uint32_t		num_pu;
 	TAILQ_ENTRY(bdev_association)	link;
 };
 static TAILQ_HEAD(, bdev_association) g_bdev_associations = TAILQ_HEAD_INITIALIZER(
@@ -265,6 +262,7 @@ _vbdev_congctrl_slidewin_avail(struct congctrl_bdev_io *io_ctx)
 	struct congctrl_io_channel *congctrl_ch = spdk_io_channel_get_ctx(io_ctx->ch);
 
 	if (io_ctx->type == CONGCTRL_IO_READ) {
+		return UINT64_MAX;
 		return congctrl_ch->rd_avail_window;
 	} else {
 		return congctrl_ch->wr_avail_window;
@@ -400,9 +398,9 @@ _vbdev_congctrl_get_lzone_idx_by_phys(struct vbdev_congctrl_ns *congctrl_ns, uin
 }
 
 static inline void
-_vbdev_congctrl_ns_forward_wp(struct vbdev_congctrl_ns *congctrl_ns, uint64_t numblocks)
+_vbdev_congctrl_ns_forward_wp(struct vbdev_congctrl_ns *congctrl_ns, uint64_t offset_blocks, uint64_t numblocks)
 {
-	uint64_t zone_idx = _vbdev_congctrl_get_lzone_idx(congctrl_ns, numblocks);
+	uint64_t zone_idx = _vbdev_congctrl_get_lzone_idx(congctrl_ns, offset_blocks);
 	congctrl_ns->zone_info[zone_idx].write_pointer += numblocks;
 	if (congctrl_ns->zone_info[zone_idx].write_pointer == congctrl_ns->zone_info[zone_idx].capacity) {
 		congctrl_ns->zone_info[zone_idx].write_pointer = congctrl_ns->congctrl_ns_bdev.zone_size;
@@ -421,9 +419,9 @@ _congctrl_ns_complete_io(struct spdk_bdev_io *bdev_io, bool success, void *cb_ar
 	struct spdk_bdev_io *orig_io = cb_arg;
 	struct vbdev_congctrl_ns *congctrl_ns = SPDK_CONTAINEROF(orig_io->bdev, struct vbdev_congctrl_ns,
 					 congctrl_ns_bdev);
+	struct vbdev_congctrl *congctrl_node = (struct vbdev_congctrl *)congctrl_ns->ctrl;
 	struct congctrl_bdev_io *io_ctx = (struct congctrl_bdev_io *)orig_io->driver_ctx;
 	struct congctrl_io_channel *congctrl_ch = spdk_io_channel_get_ctx(io_ctx->ch);
-	uint64_t zone_idx;
 	uint32_t cdw0 = 0;
 	int sct = SPDK_NVME_SCT_GENERIC, sc = SPDK_NVME_SC_SUCCESS;
 
@@ -452,9 +450,12 @@ _congctrl_ns_complete_io(struct spdk_bdev_io *bdev_io, bool success, void *cb_ar
 	io_ctx->outstanding_stripe_ios--;
 	//printf("spdk_bdev_io_complete: rc:%d out_ios:%u remain_blocks:%lu\n", io_ctx->status, io_ctx->outstanding_stripe_ios, io_ctx->remain_blocks);
 	if (io_ctx->outstanding_stripe_ios == 0 && io_ctx->remain_blocks == 0) {
+		if (io_ctx->status != SPDK_BDEV_IO_STATUS_FAILED) {
+			io_ctx->status = SPDK_BDEV_IO_STATUS_SUCCESS;
+		}
 		if (io_ctx->type == CONGCTRL_IO_WRITE) {
 			if (io_ctx->status == SPDK_BDEV_IO_STATUS_SUCCESS) {
-				_vbdev_congctrl_ns_forward_wp(congctrl_ns, orig_io->u.bdev.offset_blocks);
+				_vbdev_congctrl_ns_forward_wp(congctrl_ns, orig_io->u.bdev.offset_blocks, orig_io->u.bdev.num_blocks);
 			} else {
 				// TODO: Check phys zone state and write pointer.
 				// If the failure happened in the middle of I/O, we should finish the lzone with ZFC bit set to '1'
@@ -462,8 +463,7 @@ _congctrl_ns_complete_io(struct spdk_bdev_io *bdev_io, bool success, void *cb_ar
 				assert(0);
 			}
 		}
-		spdk_bdev_io_complete(orig_io, (io_ctx->status == SPDK_BDEV_IO_STATUS_FAILED) ?
-											SPDK_BDEV_IO_STATUS_FAILED : SPDK_BDEV_IO_STATUS_SUCCESS);		
+		spdk_bdev_io_complete(orig_io, io_ctx->status);		
 	}
 	return;
 }
@@ -563,6 +563,108 @@ _vbdev_congctrl_ns_lzone_recv(struct vbdev_congctrl_ns *congctrl_ns,
 }
 
 static void
+_vbdev_congctrl_ns_mgmt_lzone_cb(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
+{
+	struct vbdev_congctrl_ns_mgmt_io_ctx *mgmt_io_ctx = cb_arg;
+	struct vbdev_congctrl_ns *congctrl_ns = mgmt_io_ctx->congctrl_ns;
+	uint64_t zone_idx;
+	uint32_t cdw0 = 0;
+	int sct = 0, sc = 0;
+
+	if (!success) {
+		mgmt_io_ctx->status = SPDK_BDEV_IO_STATUS_FAILED;
+		spdk_bdev_io_get_nvme_status(bdev_io, &cdw0, &sct, &sc);
+		spdk_bdev_io_complete_nvme_status(mgmt_io_ctx->parent_io, cdw0, sct, sc);
+	}
+
+	assert(mgmt_io_ctx->outstanding_mgmt_ios);
+	mgmt_io_ctx->outstanding_mgmt_ios--;
+	zone_idx = _vbdev_congctrl_get_lzone_idx_by_phys(congctrl_ns, bdev_io->u.zone_mgmt.zone_id);
+
+	if (mgmt_io_ctx->outstanding_mgmt_ios == 0 && mgmt_io_ctx->remain_ios == 0) {
+		if (mgmt_io_ctx->status == SPDK_BDEV_IO_STATUS_SUCCESS) {
+			congctrl_ns->zone_info[zone_idx].state = congctrl_ns->zone_info[zone_idx].next_state;
+			if (congctrl_ns->zone_info[zone_idx].state == SPDK_BDEV_ZONE_STATE_FULL) {
+				congctrl_ns->zone_info[zone_idx].write_pointer = congctrl_ns->congctrl_ns_bdev.zone_size;
+			}
+			if (mgmt_io_ctx->parent_io) {
+				spdk_bdev_io_complete_nvme_status(mgmt_io_ctx->parent_io, 0, 0, 0);
+				spdk_bdev_io_complete(mgmt_io_ctx->parent_io, SPDK_BDEV_IO_STATUS_SUCCESS);
+			}
+		} else {
+			// this function will try to revert states and match to lzones
+			//_vbdev_congctrl_ns_lzone_state_recovery() 
+			if (mgmt_io_ctx->parent_io) {
+				spdk_bdev_io_complete(mgmt_io_ctx->parent_io, SPDK_BDEV_IO_STATUS_FAILED);
+			}
+		}
+		free(mgmt_io_ctx);
+	}
+	spdk_bdev_free_io(bdev_io);
+	return;
+}
+
+/**
+ * @brief 
+ * congctrl_node has responsibility for ZONE allocation commands.
+ * each namespace should send_msg to congctrl_node thread using this.
+ * once it completes the request, wake up the calling thread to resume I/O.
+ */
+ 
+static void
+_vbdev_congctrl_ns_alloc_zone(void *arg)
+{
+	struct vbdev_congctrl_ns_mgmt_io_ctx *mgmt_io_ctx = (struct vbdev_congctrl_ns_mgmt_io_ctx *)arg;
+	struct vbdev_congctrl_ns *congctrl_ns = mgmt_io_ctx->congctrl_ns;
+	struct vbdev_congctrl *congctrl_node = (struct vbdev_congctrl *)congctrl_ns->ctrl;
+	bool do_notification = false;
+	uint64_t zone_idx;
+	int i, rc;
+
+	zone_idx = _vbdev_congctrl_get_lzone_idx(congctrl_ns, mgmt_io_ctx->zone_mgmt.zone_id);
+	if (congctrl_ns->zone_info[zone_idx].next_state == SPDK_BDEV_ZONE_STATE_EMPTY
+			 && congctrl_node->thread != spdk_get_thread()) {
+		spdk_thread_send_msg(congctrl_node->thread, _vbdev_congctrl_ns_alloc_zone, arg);
+		return;
+	}
+
+	assert(mgmt_io_ctx->parent_io);
+	mgmt_io_ctx->nvme_status.sct = SPDK_NVME_SCT_GENERIC;
+	mgmt_io_ctx->nvme_status.sc = SPDK_NVME_SC_SUCCESS;
+	
+	congctrl_ns->zone_info[zone_idx].next_state = SPDK_BDEV_ZONE_STATE_EXP_OPEN;
+	congctrl_ns->zone_info[zone_idx].pu_group = congctrl_node->zone_alloc_cnt % congctrl_node->num_pu;
+
+	for (i=0; i < congctrl_ns->zone_array_size; i++) {
+		rc = spdk_bdev_zone_management(congctrl_node->base_desc, congctrl_node->mgmt_ch,
+						congctrl_ns->zone_info[zone_idx].base_zone_id + (i * congctrl_ns->base_zone_size),
+						mgmt_io_ctx->zone_mgmt.zone_action, _vbdev_congctrl_ns_mgmt_lzone_cb, mgmt_io_ctx);
+		if (rc != 0) {
+			congctrl_ns->zone_info[zone_idx].pu_group = congctrl_node->num_pu;
+			mgmt_io_ctx->remain_ios = 0;
+			mgmt_io_ctx->status = SPDK_BDEV_IO_STATUS_FAILED;
+			if (i == 0) {
+				// we can simply cancel the transition for this lzone since no command has been submitted.
+				congctrl_ns->zone_info[zone_idx].next_state = congctrl_ns->zone_info[zone_idx].state;
+			}
+			if (mgmt_io_ctx->outstanding_mgmt_ios) {
+				// TODO: Have to consider various error cases.
+				// We may reset opened zones to release the resource.
+				// However, we don't know if the SSD F/W reuses those released zones immediately or later.
+				// This make decreasing zone_alloc_cnt be complicated.
+				// Later, we have to check the current physical state and detect erroneous situation in advance. 
+				mgmt_io_ctx->nvme_status.sc = SPDK_NVME_SC_INTERNAL_DEVICE_ERROR;
+				rc = 0;		// error will be handled by completing ios
+			}
+			return;
+		}
+		congctrl_node->zone_alloc_cnt++;
+		mgmt_io_ctx->outstanding_mgmt_ios++;
+		mgmt_io_ctx->remain_ios--;
+	}
+}
+
+static void
 _vbdev_congctrl_ns_lzone_notify(struct spdk_io_channel_iter *i)
 {
 	struct spdk_io_channel *ch = spdk_io_channel_iter_get_channel(i);
@@ -573,19 +675,14 @@ _vbdev_congctrl_ns_lzone_notify(struct spdk_io_channel_iter *i)
 
 }
 
-// congctrl node maintains only the number of current open zones.
-// each namespace has responsibility to open either explicitly or implicitly.
-// As there is only one io channel for the namespace, we can try to
-// resubmit pending ios using congctrl_ns_bdev.
 static void
 _vbdev_congctrl_get_zone_resource(void *arg)
 {
 	struct vbdev_congctrl_ns *congctrl_ns = (struct vbdev_congctrl_ns *)arg;
 	struct vbdev_congctrl *congctrl_node = (struct vbdev_congctrl *)congctrl_ns->ctrl;
-	struct vbdev_congctrl_ns *ns;
 	bool do_notification = false;
 
-	if (congctrl_node->thread == spdk_get_thread()) {
+	if (congctrl_node->thread != spdk_get_thread()) {
 		spdk_thread_send_msg(congctrl_node->thread, _vbdev_congctrl_get_zone_resource, arg);
 		return;
 	}
@@ -622,7 +719,7 @@ _vbdev_congctrl_put_zone_resource(void *arg)
 	struct vbdev_congctrl *congctrl_node = (struct vbdev_congctrl *)congctrl_ns->ctrl;
 	struct vbdev_congctrl_ns *ns, *tmp_ns;
 
-	if (congctrl_node->thread == spdk_get_thread()) {
+	if (congctrl_node->thread != spdk_get_thread()) {
 		spdk_thread_send_msg(congctrl_node->thread, _vbdev_congctrl_put_zone_resource, arg);
 		return;
 	}
@@ -657,70 +754,9 @@ _vbdev_congctrl_ns_is_active(void *arg)
 	return ret;
 }
 
-static void
-_vbdev_congctrl_ns_mgmt_lzone_cb(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
-{
-	struct vbdev_congctrl_ns_mgmt_io_ctx *mgmt_io_ctx = cb_arg;
-	struct vbdev_congctrl_ns *congctrl_ns = mgmt_io_ctx->congctrl_ns;
-	uint64_t zone_idx;
-	uint32_t cdw0 = 0;
-	int sct = 0, sc = 0;
-
-	if (!success) {
-		mgmt_io_ctx->status = SPDK_BDEV_IO_STATUS_FAILED;
-		spdk_bdev_io_get_nvme_status(bdev_io, &cdw0, &sct, &sc);
-		spdk_bdev_io_complete_nvme_status(mgmt_io_ctx->parent_io, cdw0, sct, sc);
-	}
-
-	assert(mgmt_io_ctx->outstanding_mgmt_ios);
-	mgmt_io_ctx->outstanding_mgmt_ios--;
-	zone_idx = _vbdev_congctrl_get_lzone_idx_by_phys(congctrl_ns, bdev_io->u.zone_mgmt.zone_id);
-	if(success && --congctrl_ns->zone_info[zone_idx].next_wait_ios == 0) {
-		congctrl_ns->zone_info[zone_idx].state = congctrl_ns->zone_info[zone_idx].next_state;
-		if (congctrl_ns->zone_info[zone_idx].state == SPDK_BDEV_ZONE_STATE_FULL) {
-			congctrl_ns->zone_info[zone_idx].write_pointer = congctrl_ns->congctrl_ns_bdev.zone_size;
-		}
-	}
-	if (mgmt_io_ctx->outstanding_mgmt_ios == 0 && mgmt_io_ctx->remain_ios == 0) {
-		if (mgmt_io_ctx->status == SPDK_BDEV_IO_STATUS_SUCCESS) {
-			if (mgmt_io_ctx->parent_io) {
-				spdk_bdev_io_complete_nvme_status(mgmt_io_ctx->parent_io, 0, 0, 0);
-				spdk_bdev_io_complete(mgmt_io_ctx->parent_io, SPDK_BDEV_IO_STATUS_SUCCESS);
-			}
-		} else {
-			// this function will try to revert states and match to lzones
-			//_vbdev_congctrl_ns_lzone_state_recovery() 
-			if (mgmt_io_ctx->parent_io) {
-				spdk_bdev_io_complete(mgmt_io_ctx->parent_io, SPDK_BDEV_IO_STATUS_FAILED);
-			}
-		}
-		free(mgmt_io_ctx);
-	}
-	spdk_bdev_free_io(bdev_io);
-	return;
-}
-
-/*
-To avoid synchronization overhead for opening zones, we allow discontinuous phys
-zones in the logical zone. On the other hands, we have to ensure that phys zones
-in the opened logical zone don't have resource collision. This can be done by keeping the
-concurrent open phys zone below the threshold of die-collision. By doing so, a write
-I/O which cross the logical zone boundary can be submitted immediately as the previous
-logical zone has finished therefore opening the next logical zone does not change the number of
-opened phys zones. However, channel collision cannot be avoided completely in this way,
-especially when the write I/O rate is low and lead to long time gap for the open time
-between adjacent phys zones. Zones are opened implicitly when data is written at the
-start LBA, but low rate delays these operations in the logical zone and increase the probability
-that other flows open phys zones during the time. Instead of serializing zone opens from
-multiple flows, we do the best effort to reduce the channel collision by submitting
-explicit OPEN commands for phys zones in the next logical zone asynchronously once we detect
-a write I/O on the logical zone boundary. It is effectively avoids the channel collision if
-there are zones transiting open state less than the number of channel in the SSD.
-*/
-
 static int
-_vbdev_congctrl_ns_open_lzone(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io,
-								 uint64_t lzslba, enum spdk_nvme_zns_zone_send_action zsa, bool sel_all)
+_vbdev_congctrl_ns_exp_open_lzone(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io,
+								 uint64_t lzslba, bool sel_all)
 {
 	struct vbdev_congctrl_ns *congctrl_ns = SPDK_CONTAINEROF(bdev_io->bdev, struct vbdev_congctrl_ns,
 					 congctrl_ns_bdev);
@@ -730,14 +766,15 @@ _vbdev_congctrl_ns_open_lzone(struct spdk_io_channel *ch, struct spdk_bdev_io *b
 	struct vbdev_congctrl_ns_mgmt_io_ctx *mgmt_io_ctx;
 	uint64_t zone_idx;
 	uint32_t i;
-	uint32_t cdw0 = 0;
 	int sct = SPDK_NVME_SCT_GENERIC, sc = SPDK_NVME_SC_SUCCESS;
 	int rc;
 
-	// Each congctrl namespace has only one active lzone.
-	// Thus, zone open command that 'Select All' bit is set to 1 always fail.
-	if (sel_all ||
+	if (bdev_io->type != SPDK_BDEV_IO_TYPE_ZONE_MANAGEMENT) {
+		return -EINVAL;
+	} else if (sel_all ||
 			congctrl_ns->num_open_lzones >= congctrl_ns->congctrl_ns_bdev.max_open_zones) {
+		// Each congctrl namespace has only one active lzone.
+		// Thus, zone open command that 'Select All' bit is set to 1 always fail.
 		sct = SPDK_NVME_SCT_COMMAND_SPECIFIC;
 		sc = SPDK_NVME_SC_ZONE_TOO_MANY_OPEN;
 		goto error_complete;
@@ -751,13 +788,14 @@ _vbdev_congctrl_ns_open_lzone(struct spdk_io_channel *ch, struct spdk_bdev_io *b
 	zone_idx = _vbdev_congctrl_get_lzone_idx(congctrl_ns, lzslba);
 	switch (congctrl_ns->zone_info[zone_idx].state) {
 	case SPDK_BDEV_ZONE_STATE_IMP_OPEN:
+		congctrl_ns->zone_info[zone_idx].state = SPDK_BDEV_ZONE_STATE_EXP_OPEN;
+		spdk_bdev_io_complete_nvme_status(bdev_io, 0, sct, sc);
+		spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_SUCCESS);
+		return 0;
 	case SPDK_BDEV_ZONE_STATE_EXP_OPEN:
 		// NOOP
-		congctrl_ns->zone_info[zone_idx].state = SPDK_BDEV_ZONE_STATE_EXP_OPEN;
-		if (bdev_io->type == SPDK_BDEV_IO_TYPE_ZONE_MANAGEMENT) {
-			spdk_bdev_io_complete_nvme_status(bdev_io, 0, sct, sc);
-			spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_SUCCESS);
-		}
+		spdk_bdev_io_complete_nvme_status(bdev_io, 0, sct, sc);
+		spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_SUCCESS);
 		return 0;
 	case SPDK_BDEV_ZONE_STATE_FULL:
 		sct = SPDK_NVME_SCT_COMMAND_SPECIFIC;
@@ -782,46 +820,72 @@ _vbdev_congctrl_ns_open_lzone(struct spdk_io_channel *ch, struct spdk_bdev_io *b
 		return -ENOMEM;
 	}
 	mgmt_io_ctx->status = SPDK_BDEV_IO_STATUS_SUCCESS;
-	mgmt_io_ctx->parent_io = (bdev_io->type == SPDK_BDEV_IO_TYPE_ZONE_MANAGEMENT) ? bdev_io : NULL;
+	mgmt_io_ctx->parent_io = bdev_io;
 	mgmt_io_ctx->congctrl_ns = congctrl_ns;
 	mgmt_io_ctx->remain_ios = congctrl_ns->zone_array_size;
 	mgmt_io_ctx->outstanding_mgmt_ios = 0;
-	congctrl_ns->zone_info[zone_idx].next_state = SPDK_BDEV_ZONE_STATE_EXP_OPEN;
-	congctrl_ns->zone_info[zone_idx].next_wait_ios = congctrl_ns->zone_array_size;
-	for (i=0; i < congctrl_ns->zone_array_size; i++) {
-		rc = spdk_bdev_zone_management(congctrl_node->base_desc, congctrl_ch->base_ch,
-						congctrl_ns->zone_info[zone_idx].base_zone_id + (i * congctrl_ns->base_zone_size),
-						SPDK_BDEV_ZONE_OPEN, _vbdev_congctrl_ns_mgmt_lzone_cb, mgmt_io_ctx);
-		if (rc != 0) {
-			mgmt_io_ctx->remain_ios = 0;
-			mgmt_io_ctx->status = SPDK_BDEV_IO_STATUS_FAILED;
-			if (i == 0) {
-				// we can simply cancel the transition for this lzone since no command has been submitted.
-				congctrl_ns->zone_info[zone_idx].next_state = congctrl_ns->zone_info[zone_idx].state;
-				congctrl_ns->zone_info[zone_idx].next_wait_ios = 0;
-			}
-			if (mgmt_io_ctx->outstanding_mgmt_ios) {
-				sc = SPDK_NVME_SC_INTERNAL_DEVICE_ERROR;
-				spdk_bdev_io_complete_nvme_status(bdev_io, cdw0, sct, sc);
-				rc = 0;		// error will be handled by completing ios
-			}
-			return rc;
-		}
-		mgmt_io_ctx->outstanding_mgmt_ios++;
-		mgmt_io_ctx->remain_ios--;
-	}
+	
+	mgmt_io_ctx->zone_mgmt.zone_id = lzslba;
+	mgmt_io_ctx->zone_mgmt.zone_action = SPDK_BDEV_ZONE_OPEN;
 
+	_vbdev_congctrl_ns_alloc_zone(mgmt_io_ctx);
 	return 0;
 
 error_complete:
-	spdk_bdev_io_complete_nvme_status(bdev_io, cdw0, sct, sc);
+	spdk_bdev_io_complete_nvme_status(bdev_io, 0, sct, sc);
 	spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
 	return 0;
 }
 
 static int
+_vbdev_congctrl_ns_imp_open_lzone(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io,
+									struct vbdev_congctrl_ns *congctrl_ns, uint64_t lzslba)
+{
+	struct vbdev_congctrl *congctrl_node = (struct vbdev_congctrl *)congctrl_ns->ctrl;
+	struct congctrl_io_channel *congctrl_ch = spdk_io_channel_get_ctx(ch);
+	struct vbdev_congctrl_ns_mgmt_io_ctx *mgmt_io_ctx;
+	uint64_t zone_idx;
+
+	if (bdev_io->type == SPDK_BDEV_IO_TYPE_ZONE_MANAGEMENT) {
+		return -EINVAL;
+	}
+	assert(lzslba % congctrl_ns->congctrl_ns_bdev.zone_size == 0);
+	assert(lzslba < congctrl_ns->congctrl_ns_bdev.blockcnt);
+
+	zone_idx = _vbdev_congctrl_get_lzone_idx(congctrl_ns, lzslba);
+	switch (congctrl_ns->zone_info[zone_idx].state) {
+	case SPDK_BDEV_ZONE_STATE_IMP_OPEN:
+	case SPDK_BDEV_ZONE_STATE_EXP_OPEN:
+		// NOOP
+		return 0;
+	case SPDK_BDEV_ZONE_STATE_CLOSED:
+	case SPDK_BDEV_ZONE_STATE_EMPTY:
+		break;
+	default:
+		// any other states will generate errors in actual I/O execution
+		return 0;
+	}
+
+	mgmt_io_ctx = calloc(sizeof(struct vbdev_congctrl_ns_mgmt_io_ctx), 1);
+	if (mgmt_io_ctx) {
+		return -ENOMEM;
+	}
+	mgmt_io_ctx->status = SPDK_BDEV_IO_STATUS_SUCCESS;
+	mgmt_io_ctx->parent_io = bdev_io;
+	mgmt_io_ctx->congctrl_ns = congctrl_ns;
+	mgmt_io_ctx->remain_ios = congctrl_ns->zone_array_size;
+	mgmt_io_ctx->outstanding_mgmt_ios = 0;
+
+	mgmt_io_ctx->zone_mgmt.zone_id = lzslba;
+	mgmt_io_ctx->zone_mgmt.zone_action = SPDK_BDEV_ZONE_OPEN;
+
+	_vbdev_congctrl_ns_alloc_zone(mgmt_io_ctx);
+	return -EAGAIN;
+}
+
+static int
 _vbdev_congctrl_ns_reset_lzone(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io,
-							  uint64_t lzslba, enum spdk_nvme_zns_zone_send_action zsa, bool sel_all)
+							  uint64_t lzslba, bool sel_all)
 {
 	struct vbdev_congctrl_ns *congctrl_ns = SPDK_CONTAINEROF(bdev_io->bdev, struct vbdev_congctrl_ns,
 					 congctrl_ns_bdev);
@@ -883,7 +947,6 @@ _vbdev_congctrl_ns_reset_lzone(struct spdk_io_channel *ch, struct spdk_bdev_io *
 		case SPDK_BDEV_ZONE_STATE_CLOSED:
 		case SPDK_BDEV_ZONE_STATE_FULL:
 			congctrl_ns->zone_info[zone_idx].next_state = SPDK_BDEV_ZONE_STATE_EMPTY;
-			congctrl_ns->zone_info[zone_idx].next_wait_ios = congctrl_ns->zone_array_size;
 			for (i = 0; i < congctrl_ns->zone_array_size; i++) {
 				rc = spdk_bdev_zone_management(congctrl_node->base_desc, congctrl_ch->base_ch,
 								congctrl_ns->zone_info[zone_idx].base_zone_id + (i * congctrl_ns->base_zone_size),
@@ -894,7 +957,6 @@ _vbdev_congctrl_ns_reset_lzone(struct spdk_io_channel *ch, struct spdk_bdev_io *
 					if (i == 0) {
 						// we can simply cancel the transition for this lzone since no command has been submitted.
 						congctrl_ns->zone_info[zone_idx].next_state = congctrl_ns->zone_info[zone_idx].state;
-						congctrl_ns->zone_info[zone_idx].next_wait_ios = 0;
 					}
 					if (mgmt_io_ctx->outstanding_mgmt_ios) {
 						sc = SPDK_NVME_SC_INTERNAL_DEVICE_ERROR;
@@ -923,7 +985,7 @@ error_complete:
 
 static int
 _vbdev_congctrl_ns_close_lzone(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io,
-							  uint64_t lzslba, enum spdk_nvme_zns_zone_send_action zsa, bool sel_all)
+							  uint64_t lzslba, bool sel_all)
 {
 	struct vbdev_congctrl_ns *congctrl_ns = SPDK_CONTAINEROF(bdev_io->bdev, struct vbdev_congctrl_ns,
 					 congctrl_ns_bdev);
@@ -977,7 +1039,7 @@ error_complete:
 
 static int
 _vbdev_congctrl_finish_lzone(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io,
-							  uint64_t lzslba, enum spdk_nvme_zns_zone_send_action zsa, bool sel_all)
+							  uint64_t lzslba, bool sel_all)
 {
 	struct vbdev_congctrl_ns *congctrl_ns = SPDK_CONTAINEROF(bdev_io->bdev, struct vbdev_congctrl_ns,
 					 congctrl_ns_bdev);
@@ -1038,7 +1100,6 @@ _vbdev_congctrl_finish_lzone(struct spdk_io_channel *ch, struct spdk_bdev_io *bd
 		case SPDK_BDEV_ZONE_STATE_EXP_OPEN:
 		case SPDK_BDEV_ZONE_STATE_CLOSED:
 			congctrl_ns->zone_info[zone_idx].next_state = SPDK_BDEV_ZONE_STATE_FULL;
-			congctrl_ns->zone_info[zone_idx].next_wait_ios = congctrl_ns->zone_array_size;
 			for (i = 0; i < congctrl_ns->zone_array_size; i++) {
 				rc = spdk_bdev_zone_management(congctrl_node->base_desc, congctrl_ch->base_ch,
 								congctrl_ns->zone_info[zone_idx].base_zone_id + (i * congctrl_ns->base_zone_size),
@@ -1049,7 +1110,6 @@ _vbdev_congctrl_finish_lzone(struct spdk_io_channel *ch, struct spdk_bdev_io *bd
 					if (i == 0) {
 						// we can simply cancel the transition for this lzone since no command has been submitted.
 						congctrl_ns->zone_info[zone_idx].next_state = congctrl_ns->zone_info[zone_idx].state;
-						congctrl_ns->zone_info[zone_idx].next_wait_ios = 0;
 					}
 					if (mgmt_io_ctx->outstanding_mgmt_ios) {
 						sc = SPDK_NVME_SC_INTERNAL_DEVICE_ERROR;
@@ -1086,20 +1146,18 @@ _congctrl_ns_io_submit(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io)
 	struct congctrl_bdev_io *io_ctx = (struct congctrl_bdev_io *)bdev_io->driver_ctx;
 
 	int rc = 0;
-	uint64_t lzslba;		// Logical Zone Start LBA
-	uint64_t lz_stripe_idx;
-	uint64_t zone_array_id, lz_offset_blocks;
-	uint64_t remain_stripe_blocks;
 	uint64_t io_offset_blocks;
-	uint64_t base_zone_zslba, base_zone_offset, blks_to_submit;
+	uint64_t blks_to_submit;
 	int iov_idx;
 	uint64_t iov_offset;
+	uint64_t zone_idx;
 
 	iov_idx = 0;
 	iov_offset = 0;
 
 	while (io_ctx->remain_blocks) {
 		// TODO: use '&' operator rather than '%'
+		// TODO: not here, but we have to check if the stripe size is a factor of physical zone at the init phase
 		if (io_ctx->next_offset_blocks % congctrl_ns->congctrl_ns_bdev.zone_size > congctrl_ns->zcap) {
 			if (bdev_io->type == SPDK_BDEV_IO_TYPE_WRITE) {
 				return -EINVAL; // TODO: this should be checked before entering this cb function
@@ -1131,21 +1189,13 @@ _congctrl_ns_io_submit(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io)
 				blks_to_submit = bdev_io->u.bdev.iovs[iov_idx].iov_len - iov_offset;
 			}
 
-			/* TODO: check if write io exceeds the zone size (ZSZE)
-			* If so, we do followings.
-			* 1. When no current open zone, just open new logical zone
-			* 2. If there is open zone and its write ptr is not at the end, return error
-			* Note: write ptr updates only if the I/O completes. 
-			*/
-
 			// TODO: check if this namespace blocklen is not equal to the base blocklen.
 			// congctrl_ns_bdev.phys_blocklen != congctrl_ns_bdev.blocklen
 			// If so, convert it here
 			//printf("id:%u length:%lu org_offset:%lu phy_offset:%lu\n", congctrl_ch->ch_id, bdev_io->u.bdev.num_blocks, bdev_io->u.bdev.offset_blocks, io_offset_blocks);
 			//printf("next_offset_blocks: %lu remain_blocks: %lu\n", io_ctx->next_offset_blocks, io_ctx->remain_blocks);
 			//printf("zone_size: %lu stripe_blocks: %u zone_array_size: %u\n", congctrl_ns->congctrl_ns_bdev.zone_size, congctrl_ns->stripe_blocks, congctrl_ns->zone_array_size);
-			//printf("lzslba: %lu zone_array_id: %lu lz_offset_blocks: %lu lz_stripe_idx: %lu base_zone_zslba: %lu remain_stripe_blocks: %lu\n", lzslba, zone_array_id, lz_offset_blocks, lz_stripe_idx, base_zone_zslba, remain_stripe_blocks);
-			//printf("offset: %lu blocks: %lu org_offset:%lu org_blocks:%lu\n", io_offset_blocks, base_zone_num_blocks, bdev_io->u.bdev.offset_blocks, bdev_io->u.bdev.num_blocks);
+			//printf("offset: %lu org_offset:%lu org_blocks:%lu\n", io_offset_blocks, bdev_io->u.bdev.offset_blocks, bdev_io->u.bdev.num_blocks);
 
 			assert(blks_to_submit>0);
 
@@ -1157,13 +1207,32 @@ _congctrl_ns_io_submit(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io)
 								bdev_io);
 				break;
 			case SPDK_BDEV_IO_TYPE_WRITE:
+				if (io_ctx->next_offset_blocks % congctrl_ns->congctrl_ns_bdev.zone_size == 0) {
+					// Open a logical zone
+					if (congctrl_node->thread != spdk_get_thread()) {
+						// TODO: send_msg
+					} else {
+						rc = _vbdev_congctrl_ns_imp_open_lzone(ch, bdev_io, congctrl_ns, io_ctx->next_offset_blocks);
+						if (rc != 0) {
+							break;
+						}
+					}
+				}
+
+				zone_idx = _vbdev_congctrl_get_lzone_idx(congctrl_ns, io_ctx->next_offset_blocks);
+				if (spdk_unlikely(congctrl_ns->zone_info[zone_idx].state != SPDK_BDEV_ZONE_STATE_IMP_OPEN &&
+				     congctrl_ns->zone_info[zone_idx].state != SPDK_BDEV_ZONE_STATE_IMP_OPEN)) {
+						rc = -EAGAIN;
+						break;
+				}
+
 				rc = spdk_bdev_write_blocks(congctrl_node->base_desc, congctrl_ch->base_ch,
 								bdev_io->u.bdev.iovs[iov_idx].iov_base + iov_offset,
 								io_offset_blocks, blks_to_submit, _congctrl_ns_complete_io,
 								bdev_io);
 				break;
 			case SPDK_BDEV_IO_TYPE_WRITE_ZEROES:
-				// TODO : we need to handel WRITE_ZEROES separately.
+				// TODO : we need to handle WRITE_ZEROES separately.
 				//rc = spdk_bdev_write_zeroes_blocks(congctrl_node->base_desc, congctrl_ch->base_ch,
 				//				io_offset_blocks, blks_to_submit,
 				//				_congctrl_ns_complete_io, bdev_io);
@@ -1593,14 +1662,7 @@ _congctrl_write_conf_values(struct vbdev_congctrl *congctrl_node, struct spdk_js
 {
 	spdk_json_write_named_string(w, "name", spdk_bdev_get_name(&congctrl_node->mgmt_bdev));
 	spdk_json_write_named_string(w, "base_bdev_name", spdk_bdev_get_name(congctrl_node->base_bdev));
-	spdk_json_write_named_uint64(w, "upper_read_latency",
-				    congctrl_node->upper_read_latency * SPDK_SEC_TO_USEC / spdk_get_ticks_hz());
-	spdk_json_write_named_uint64(w, "lower_read_latency",
-				    congctrl_node->lower_read_latency * SPDK_SEC_TO_USEC / spdk_get_ticks_hz());
-	spdk_json_write_named_uint64(w, "upper_write_latency",
-				    congctrl_node->upper_write_latency * SPDK_SEC_TO_USEC / spdk_get_ticks_hz());
-	spdk_json_write_named_uint64(w, "lower_write_latency",
-				    congctrl_node->lower_write_latency * SPDK_SEC_TO_USEC / spdk_get_ticks_hz());
+	spdk_json_write_named_uint32(w, "num_pu", congctrl_node->num_pu);
 }
 
 static int
@@ -1676,7 +1738,7 @@ congctrl_bdev_io_ch_create_cb(void *io_device, void *ctx_buf)
 	congctrl_ch->rd_avail_window = congctrl_ns->stripe_blocks * congctrl_ns->zone_array_size;
 	//printf("rd_slidwin_size: %lu\n", congctrl_ch->rd_avail_window);
 	//congctrl_ch->rd_avail_window = 8;
-	congctrl_ch->wr_avail_window = VBDEV_CONGCTRL_SLIDEWIN_MAX / congctrl_ns->congctrl_ns_bdev.blocklen;
+	congctrl_ch->wr_avail_window = congctrl_ns->stripe_blocks * congctrl_ns->zone_array_size;
 
 	TAILQ_INIT(&congctrl_ch->rd_slidewin_queue);
 	TAILQ_INIT(&congctrl_ch->wr_slidewin_queue);
@@ -1691,7 +1753,7 @@ congctrl_bdev_mgmt_ch_create_cb(void *io_device, void *ctx_buf)
 	struct vbdev_congctrl *congctrl_node = io_device;
 
 	congctrl_mgmt_ch->io_poller = SPDK_POLLER_REGISTER(_congctrl_cong_update, congctrl_mgmt_ch, 100);
-	congctrl_mgmt_ch->base_ch = spdk_bdev_get_io_channel(congctrl_node->base_desc);
+	congctrl_node->mgmt_ch = spdk_bdev_get_io_channel(congctrl_node->base_desc);
 
 	return 0;
 }
@@ -1712,9 +1774,10 @@ static void
 congctrl_bdev_mgmt_ch_destroy_cb(void *io_device, void *ctx_buf)
 {
 	struct congctrl_mgmt_channel *congctrl_mgmt_ch = ctx_buf;
+	struct vbdev_congctrl *congctrl_node = io_device;
 
 	spdk_poller_unregister(&congctrl_mgmt_ch->io_poller);
-	spdk_put_io_channel(congctrl_mgmt_ch->base_ch);
+	spdk_put_io_channel(congctrl_node->mgmt_ch);
 }
 
 /* Create the congctrl association from the bdev and vbdev name and insert
@@ -1779,8 +1842,7 @@ vbdev_congctrl_ns_insert_association(const char *congctrl_name, const char *ns_n
  * on the global list. */
 static int
 vbdev_congctrl_insert_association(const char *bdev_name, const char *vbdev_name,
-			       uint64_t upper_read_latency, uint64_t lower_read_latency,
-			       uint64_t upper_write_latency, uint64_t lower_write_latency)
+				   uint32_t num_pu)
 {
 	struct bdev_association *assoc;
 
@@ -1812,61 +1874,11 @@ vbdev_congctrl_insert_association(const char *bdev_name, const char *vbdev_name,
 		return -ENOMEM;
 	}
 
-	assoc->upper_read_latency = upper_read_latency;
-	assoc->lower_read_latency = lower_read_latency;
-	assoc->upper_write_latency = upper_write_latency;
-	assoc->lower_write_latency = lower_write_latency;
+	assoc->num_pu = num_pu;
 
 	TAILQ_INSERT_TAIL(&g_bdev_associations, assoc, link);
 
 	return 0;
-}
-
-int
-vbdev_congctrl_update_latency_value(char *congctrl_name, uint64_t latency_upper,
-		  uint64_t latency_lower, enum congctrl_io_type type)
-{
-	struct bdev_association *assoc;
-	struct spdk_bdev *mgmt_bdev;
-	struct vbdev_congctrl *congctrl_node;
-	uint64_t ticks_mhz = spdk_get_ticks_hz() / SPDK_SEC_TO_USEC;
-	int rc = -EINVAL;
-
-	if (type >= CONGCTRL_IO_MGMT) {
-		return rc;
-	}
- 
-	TAILQ_FOREACH(assoc, &g_bdev_associations, link) {
-		if (strcmp(assoc->vbdev_name, congctrl_name) != 0) {
-			continue;
-		}
-
-		rc = 0;
-		switch (type) {
-		case CONGCTRL_IO_READ:
-			assoc->upper_read_latency = ticks_mhz * latency_upper;
-			assoc->lower_read_latency = ticks_mhz * latency_lower;
-			break;
-		case CONGCTRL_IO_WRITE:
-			assoc->upper_write_latency = ticks_mhz * latency_upper;
-			assoc->lower_write_latency = ticks_mhz * latency_lower;
-			break;
-		default:
-			break;
-		}
-
-		mgmt_bdev = spdk_bdev_get_by_name(congctrl_name);
-		if (mgmt_bdev && mgmt_bdev->module == &congctrl_if) {
-			congctrl_node = SPDK_CONTAINEROF(mgmt_bdev, struct vbdev_congctrl, mgmt_bdev);
-
-			congctrl_node->upper_read_latency = assoc->upper_read_latency;
-			congctrl_node->lower_read_latency = assoc->lower_read_latency;
-			congctrl_node->upper_write_latency = assoc->upper_write_latency;
-			congctrl_node->lower_write_latency = assoc->lower_write_latency;
-		}
-	}
-
-	return rc;
 }
 
 static int
@@ -2026,6 +2038,7 @@ vbdev_congctrl_ns_register(const char *ctrl_name, const char *ns_name)
 				congctrl_ns->zone_info[i].write_pointer = congctrl_ns->congctrl_ns_bdev.zone_size;
 				congctrl_ns->zone_info[i].capacity = congctrl_ns->zcap;
 				congctrl_ns->zone_info[i].state = SPDK_BDEV_ZONE_STATE_FULL;
+				congctrl_ns->zone_info[i].pu_group = congctrl_node->num_pu;
 			}
 
 			spdk_io_device_register(congctrl_ns, congctrl_bdev_io_ch_create_cb, congctrl_bdev_io_ch_destroy_cb,
@@ -2100,7 +2113,6 @@ vbdev_congctrl_register(const char *bdev_name)
 	struct bdev_association *assoc;
 	struct vbdev_congctrl *congctrl_node;
 	struct spdk_bdev *bdev;
-	uint64_t ticks_mhz = spdk_get_ticks_hz() / SPDK_SEC_TO_USEC;
 	int rc = 0;
 
 	/* Check our list of names from config versus this bdev and if
@@ -2171,11 +2183,9 @@ vbdev_congctrl_register(const char *bdev_name)
 		congctrl_node->mgmt_bdev.fn_table = &vbdev_congctrl_fn_table;
 		congctrl_node->mgmt_bdev.module = &congctrl_if;
 
-		/* Store the number of ticks you need to add to get the I/O expiration time. */
-		congctrl_node->upper_read_latency = ticks_mhz * assoc->upper_read_latency;
-		congctrl_node->lower_read_latency = ticks_mhz * assoc->lower_read_latency;
-		congctrl_node->upper_write_latency = ticks_mhz * assoc->upper_write_latency;
-		congctrl_node->lower_write_latency = ticks_mhz * assoc->lower_write_latency;
+		congctrl_node->num_pu = assoc->num_pu;
+		// TODO: read previous counter from metadata
+		congctrl_node->zone_alloc_cnt = 0;
 
 		/* set 0 to current claimed blockcnt */
 		congctrl_node->claimed_blockcnt = 0;
@@ -2277,19 +2287,12 @@ delete_congctrl_ns(struct spdk_bdev *bdev, spdk_bdev_unregister_cb cb_fn, void *
 }
 
 int
-create_congctrl_disk(const char *bdev_name, const char *vbdev_name, uint64_t upper_read_latency,
-		  uint64_t lower_read_latency, uint64_t upper_write_latency, uint64_t lower_write_latency)
+create_congctrl_disk(const char *bdev_name, const char *vbdev_name, uint32_t num_pu)
 {
 	struct bdev_association *assoc;
 	int rc = 0;
 
-	if (upper_read_latency < lower_read_latency || upper_write_latency < lower_write_latency) {
-		SPDK_ERRLOG("Unable to create a congctrl bdev where upper latency is less than lower latency.\n");
-		return -EINVAL;
-	}
-
-	rc = vbdev_congctrl_insert_association(bdev_name, vbdev_name, upper_read_latency, lower_read_latency,
-					    upper_write_latency, lower_write_latency);
+	rc = vbdev_congctrl_insert_association(bdev_name, vbdev_name, num_pu);
 	if (rc) {
 		return rc;
 	}

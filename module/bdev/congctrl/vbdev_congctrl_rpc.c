@@ -40,82 +40,10 @@
 #include "spdk/log.h"
 #include "spdk_internal/assert.h"
 
-struct rpc_update_latency {
-	char *congctrl_bdev_name;
-	char *io_type;
-	uint64_t latency_upper;
-	uint64_t latency_lower;
-};
-
-static const struct spdk_json_object_decoder rpc_update_latency_decoders[] = {
-	{"congctrl_bdev_name", offsetof(struct rpc_update_latency, congctrl_bdev_name), spdk_json_decode_string},
-	{"io_type", offsetof(struct rpc_update_latency, io_type), spdk_json_decode_string},
-	{"latency_upper_us", offsetof(struct rpc_update_latency, latency_upper), spdk_json_decode_uint64},
-	{"latency_lower_us", offsetof(struct rpc_update_latency, latency_lower), spdk_json_decode_uint64}
-};
-
-static void
-free_rpc_update_latency(struct rpc_update_latency *req)
-{
-	free(req->congctrl_bdev_name);
-	free(req->io_type);
-}
-
-static void
-rpc_bdev_congctrl_update_latency(struct spdk_jsonrpc_request *request,
-			      const struct spdk_json_val *params)
-{
-	struct rpc_update_latency req = {NULL};
-	enum congctrl_io_type io_type;
-	int rc = 0;
-
-	if (spdk_json_decode_object(params, rpc_update_latency_decoders,
-				    SPDK_COUNTOF(rpc_update_latency_decoders),
-				    &req)) {
-		SPDK_DEBUGLOG(vbdev_congctrl, "spdk_json_decode_object failed\n");
-		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
-						 "spdk_json_decode_object failed");
-		goto cleanup;
-	}
-
-	if (!strncmp(req.io_type, "read", 5)) {
-		io_type = CONGCTRL_IO_READ;
-	} else if (!strncmp(req.io_type, "write", 6)) {
-		io_type = CONGCTRL_IO_WRITE;
-	} else {
-		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
-						 "Please specify a valid latency type.");
-		goto cleanup;
-	}
-
-	rc = vbdev_congctrl_update_latency_value(req.congctrl_bdev_name, req.latency_upper, req.latency_lower, io_type);
-
-	if (rc == -ENODEV) {
-		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
-						 "The requested bdev does not exist.");
-		goto cleanup;
-	} else if (rc == -EINVAL) {
-		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_REQUEST,
-						 "The requested bdev is not a delay bdev.");
-		goto cleanup;
-	} else if (rc) {
-		SPDK_UNREACHABLE();
-	}
-
-	spdk_jsonrpc_send_bool_response(request, true);
-
-cleanup:
-	free_rpc_update_latency(&req);
-}
-SPDK_RPC_REGISTER("bdev_congctrl_update_latency", rpc_bdev_congctrl_update_latency, SPDK_RPC_RUNTIME)
-
 struct rpc_construct_congctrl {
 	char *base_bdev_name;
 	char *name;
-	uint64_t upper_read_latency;
-	uint64_t lower_read_latency;
-	uint64_t upper_write_latency;
-	uint64_t lower_write_latency;
+	uint32_t num_pu;
 };
 
 static void
@@ -128,10 +56,7 @@ free_rpc_construct_congctrl(struct rpc_construct_congctrl *r)
 static const struct spdk_json_object_decoder rpc_construct_congctrl_decoders[] = {
 	{"base_bdev_name", offsetof(struct rpc_construct_congctrl, base_bdev_name), spdk_json_decode_string},
 	{"name", offsetof(struct rpc_construct_congctrl, name), spdk_json_decode_string},
-	{"upper_read_latency", offsetof(struct rpc_construct_congctrl, upper_read_latency), spdk_json_decode_uint64},
-	{"lower_read_latency", offsetof(struct rpc_construct_congctrl, lower_read_latency), spdk_json_decode_uint64},
-	{"upper_write_latency", offsetof(struct rpc_construct_congctrl, upper_write_latency), spdk_json_decode_uint64},
-	{"lower_write_latency", offsetof(struct rpc_construct_congctrl, lower_write_latency), spdk_json_decode_uint64},
+	{"num_put", offsetof(struct rpc_construct_congctrl, num_pu), spdk_json_decode_uint32},
 };
 
 static void
@@ -151,8 +76,7 @@ rpc_bdev_congctrl_create(struct spdk_jsonrpc_request *request,
 		goto cleanup;
 	}
 
-	rc = create_congctrl_disk(req.base_bdev_name, req.name, req.upper_read_latency, req.lower_read_latency,
-			       req.upper_write_latency, req.lower_write_latency);
+	rc = create_congctrl_disk(req.base_bdev_name, req.name, req.num_pu);
 	if (rc != 0) {
 		spdk_jsonrpc_send_error_response(request, rc, spdk_strerror(-rc));
 		goto cleanup;

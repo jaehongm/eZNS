@@ -68,14 +68,10 @@ void delete_congctrl_ns(struct spdk_bdev *bdev, spdk_bdev_unregister_cb cb_fn,
  *
  * \param bdev_name Bdev on which congctrl vbdev will be created.
  * \param vbdev_name Name of the congctrl bdev.
- * \param upper_read_latency Desired upperbound read latency.
- * \param lower_read_latency Desired lowerbound read latency
- * \param upper_write_latency Desired upperbound write latency.
- * \param lower_write_latency Desired lowerbound write latency
+ * \param num_pu Number of PU (die) in the SSD.
  * \return 0 on success, other on failure.
  */
-int create_congctrl_disk(const char *bdev_name, const char *vbdev_name, uint64_t upper_read_latency,
-		      uint64_t lower_read_latency, uint64_t upper_write_latency, uint64_t lower_write_latency);
+int create_congctrl_disk(const char *bdev_name, const char *vbdev_name, uint32_t num_pu);
 
 /**
  * Delete congctrl ctrl.
@@ -86,16 +82,5 @@ int create_congctrl_disk(const char *bdev_name, const char *vbdev_name, uint64_t
  */
 void delete_congctrl_disk(struct spdk_bdev *bdev, spdk_bdev_unregister_cb cb_fn,
 		       void *cb_arg);
-
-/**
- * Update one of the latency values for a given congctrl bdev.
- *
- * \param congctrl_name The name of the congctrl bdev
- * \param latency_us The new latency threshold value, in microseconds
- * \param type a valid value from the congctrl_io_type enum
- * \return 0 on success, -ENODEV if the bdev cannot be found, and -EINVAL if the bdev is not a congctrl device.
- */
-int vbdev_congctrl_update_latency_value(char *congctrl_name, uint64_t latency_upper, uint64_t latency_lower,
-				     enum congctrl_io_type type);
 
 #endif /* SPDK_VBDEV_CONGCTRL_H */
