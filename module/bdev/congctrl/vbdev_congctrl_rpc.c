@@ -56,7 +56,7 @@ free_rpc_construct_congctrl(struct rpc_construct_congctrl *r)
 static const struct spdk_json_object_decoder rpc_construct_congctrl_decoders[] = {
 	{"base_bdev_name", offsetof(struct rpc_construct_congctrl, base_bdev_name), spdk_json_decode_string},
 	{"name", offsetof(struct rpc_construct_congctrl, name), spdk_json_decode_string},
-	{"num_put", offsetof(struct rpc_construct_congctrl, num_pu), spdk_json_decode_uint32},
+	{"num_pu", offsetof(struct rpc_construct_congctrl, num_pu), spdk_json_decode_uint32},
 };
 
 static void

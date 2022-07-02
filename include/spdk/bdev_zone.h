@@ -55,6 +55,9 @@ enum spdk_bdev_zone_action {
 	SPDK_BDEV_ZONE_OPEN,
 	SPDK_BDEV_ZONE_RESET,
 	SPDK_BDEV_ZONE_OFFLINE,
+	SPDK_BDEV_ZONE_SET_ZDE,
+	SPDK_BDEV_ZONE_REPORT,
+	SPDK_BDEV_ZONE_EXT_REPORT,
 };
 
 enum spdk_bdev_zone_state {
@@ -74,6 +77,16 @@ struct spdk_bdev_zone_info {
 	uint64_t			write_pointer;
 	uint64_t			capacity;
 	enum spdk_bdev_zone_state	state;
+};
+
+#define SPDK_BDEV_ZONE_MAX_EXT_SIZE 64	 // currently support only 64B (minimum)
+
+struct spdk_bdev_zone_ext_info {
+	uint64_t			zone_id;
+	uint64_t			write_pointer;
+	uint64_t			capacity;
+	enum spdk_bdev_zone_state	state;
+	char				ext[SPDK_BDEV_ZONE_MAX_EXT_SIZE];
 };
 
 /**
@@ -169,6 +182,9 @@ int spdk_bdev_get_zone_info(struct spdk_bdev_desc *desc, struct spdk_io_channel 
 			    uint64_t zone_id, size_t num_zones, struct spdk_bdev_zone_info *info,
 			    spdk_bdev_io_completion_cb cb, void *cb_arg);
 
+int spdk_bdev_get_zone_ext_info(struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
+			uint64_t zone_id, size_t num_zones, struct spdk_bdev_zone_ext_info *info,
+			spdk_bdev_io_completion_cb cb, void *cb_arg);
 
 /**
  * Submit a zone_management request to the bdev.
@@ -190,6 +206,9 @@ int spdk_bdev_get_zone_info(struct spdk_bdev_desc *desc, struct spdk_io_channel 
 int spdk_bdev_zone_management(struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
 			      uint64_t zone_id, enum spdk_bdev_zone_action action,
 			      spdk_bdev_io_completion_cb cb, void *cb_arg);
+
+int spdk_bdev_set_zone_ext_info(struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
+			  	  uint64_t zone_id, void *ext_buf, spdk_bdev_io_completion_cb cb, void *cb_arg);
 
 /**
  * Submit a zone_append request to the bdev.

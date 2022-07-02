@@ -132,13 +132,12 @@ enum vbdev_congctrl_ns_state {
 };
 
 struct vbdev_congctrl_ns_zone_info {
-	uint64_t			base_zone_id;
 	uint64_t			write_pointer;
 	uint64_t			capacity;
 	uint32_t			pu_group;
 	enum spdk_bdev_zone_state	state;
-
 	enum spdk_bdev_zone_state	next_state; /* state to be transitioned next */
+	uint64_t			base_zone_id[0];
 };
 
 struct vbdev_congctrl_ns {
@@ -146,18 +145,17 @@ struct vbdev_congctrl_ns {
 	struct spdk_bdev		congctrl_ns_bdev;    /* the congctrl ns virtual bdev */
 	struct spdk_thread 		*thread;  /* thread where the namespace is opened */
 	
+	uint32_t	nsid;
 	bool		active;
 	uint32_t	ref;
 	uint64_t	num_open_lzones;
 	uint64_t	base_zone_size;
+	uint64_t	num_base_zones;
 
 	// Namespace specific configuration parameters
 	uint32_t	zone_array_size; /* the number of base zones in logical zone */
 	uint32_t	stripe_blocks; /* stripe size (in blocks) */
 	uint32_t	block_align;
-
-	uint64_t	start_base_zone_id;
-	uint64_t	num_base_zones;
 	uint64_t	zcap;		// Logical Zone Capacity
 
 	/**
@@ -176,6 +174,34 @@ struct vbdev_congctrl_ns {
 	struct vbdev_congctrl_ns_zone_info zone_info[0];
 };
 
+struct vbdev_congctrl_zone_md {
+	uint32_t			ns_id;
+	uint64_t			lzone_id;
+	uint32_t			stripe_id;
+
+	uint32_t			stripe_width;
+	uint32_t			stripe_size;
+
+	char reserved[40];
+};
+
+struct vbdev_congctrl_zone_info {
+	uint64_t			zone_id;
+	uint64_t			write_pointer;
+	uint64_t			capacity;
+	enum spdk_bdev_zone_state	state;
+
+	uint32_t			ns_id;
+	uint64_t			lzone_id;
+	uint32_t			stripe_id;
+
+	uint32_t			stripe_width;
+	uint32_t			stripe_size;
+
+	uint32_t			pu_group;
+	STAILQ_ENTRY(vbdev_congctrl_zone_info) link;
+};
+
 /* List of congctrl bdev ctrls and associated info for each. */
 struct vbdev_congctrl {
 	struct spdk_bdev		*base_bdev; /* the thing we're attaching to */
@@ -185,13 +211,22 @@ struct vbdev_congctrl {
 	
 	uint32_t			num_pu;			  /* the number of parallel units (NAND dies) in the SSD */
 	uint64_t 			zone_alloc_cnt;		  /* zone allocation counter */ 
+
+	uint32_t			num_ns;				/* number of namespace */
 	uint64_t			claimed_blockcnt; /* claimed blocks by namespaces */
 	uint64_t			num_open_states;		/* the number of open state zones granted to namespaces */ 
 	struct spdk_thread		*thread;    /* thread where base device is opened */
 
+	uint64_t			num_zones;
+	struct vbdev_congctrl_zone_info 	*zone_info;
+
 	TAILQ_HEAD(, vbdev_congctrl_ns)	ns;
 	TAILQ_HEAD(, vbdev_congctrl_ns)	ns_active;
 	TAILQ_HEAD(, vbdev_congctrl_ns)	ns_pending;
+
+	STAILQ_HEAD(, vbdev_congctrl_zone_info) zone_reserved;
+	STAILQ_HEAD(, vbdev_congctrl_zone_info) zone_empty;
+
 	TAILQ_ENTRY(vbdev_congctrl)	link;
 };
 

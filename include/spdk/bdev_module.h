@@ -434,6 +434,11 @@ struct spdk_bdev {
 	uint64_t zone_size;
 
 	/**
+	 * Zone Descriptor Extension Size (ZDES) (in bytes)
+	 */
+	uint16_t zone_ext_size;
+
+	/**
 	 * Maximum zone append data transfer size (in blocks).
 	 */
 	uint32_t max_zone_append_size;

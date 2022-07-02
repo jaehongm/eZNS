@@ -145,6 +145,9 @@ DEFINE_STUB(spdk_nvme_cuse_get_ns_name, int, (struct spdk_nvme_ctrlr *ctrlr, uin
 DEFINE_STUB(spdk_nvme_zns_ns_get_zone_size_sectors, uint64_t,
 	    (struct spdk_nvme_ns *ns), 0);
 
+DEFINE_STUB(spdk_nvme_zns_ns_get_zone_ext_size, uint64_t,
+		(struct spdk_nvme_ns *ns), 0);
+
 DEFINE_STUB(spdk_nvme_zns_ctrlr_get_max_zone_append_size, uint32_t,
 	    (const struct spdk_nvme_ctrlr *ctrlr), 0);
 
@@ -174,6 +177,12 @@ DEFINE_STUB(spdk_nvme_zns_report_zones, int,
 	     enum spdk_nvme_zns_zra_report_opts report_opts, bool partial_report,
 	     spdk_nvme_cmd_cb cb_fn, void *cb_arg), 0);
 
+DEFINE_STUB(spdk_nvme_zns_ext_report_zones, int,
+	    (struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair,
+	     void *payload, uint32_t payload_size, uint64_t slba,
+	     enum spdk_nvme_zns_zra_report_opts report_opts, bool partial_report,
+	     spdk_nvme_cmd_cb cb_fn, void *cb_arg), 0);
+
 DEFINE_STUB(spdk_nvme_zns_close_zone, int,
 	    (struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair, uint64_t slba,
 	     bool select_all, spdk_nvme_cmd_cb cb_fn, void *cb_arg), 0);
@@ -189,6 +198,11 @@ DEFINE_STUB(spdk_nvme_zns_open_zone, int,
 DEFINE_STUB(spdk_nvme_zns_reset_zone, int,
 	    (struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair, uint64_t slba,
 	     bool select_all, spdk_nvme_cmd_cb cb_fn, void *cb_arg), 0);
+
+DEFINE_STUB(spdk_nvme_zns_set_zone_desc_ext, int,
+		(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair,
+				uint64_t slba, void *buffer, uint32_t payload_size,
+				spdk_nvme_cmd_cb cb_fn, void *cb_arg), 0);
 
 DEFINE_STUB(spdk_nvme_ns_get_nguid, const uint8_t *, (const struct spdk_nvme_ns *ns), NULL);
 
@@ -209,6 +223,9 @@ DEFINE_STUB(spdk_accel_submit_crc32cv, int, (struct spdk_io_channel *ch, uint32_
 		uint32_t iov_cnt, uint32_t seed, spdk_accel_completion_cb cb_fn, void *cb_arg), 0);
 
 DEFINE_STUB_V(spdk_nvme_ctrlr_prepare_for_reset, (struct spdk_nvme_ctrlr *ctrlr));
+
+DEFINE_STUB(spdk_nvme_zns_ns_get_data, const struct spdk_nvme_zns_ns_data *,
+				(struct spdk_nvme_ns *ns), NULL);
 
 struct ut_nvme_req {
 	uint16_t			opc;

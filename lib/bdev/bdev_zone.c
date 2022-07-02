@@ -109,8 +109,62 @@ spdk_bdev_get_zone_info(struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
 	bdev_io->internal.desc = desc;
 	bdev_io->type = SPDK_BDEV_IO_TYPE_GET_ZONE_INFO;
 	bdev_io->u.zone_mgmt.zone_id = zone_id;
+	bdev_io->u.zone_mgmt.zone_action = SPDK_BDEV_ZONE_REPORT;
 	bdev_io->u.zone_mgmt.num_zones = num_zones;
 	bdev_io->u.zone_mgmt.buf = info;
+	bdev_io_init(bdev_io, bdev, cb_arg, cb);
+
+	bdev_io_submit(bdev_io);
+	return 0;
+}
+
+int
+spdk_bdev_get_zone_ext_info(struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
+			uint64_t zone_id, size_t num_zones, struct spdk_bdev_zone_ext_info *info,
+			spdk_bdev_io_completion_cb cb, void *cb_arg)
+{
+	struct spdk_bdev *bdev = spdk_bdev_desc_get_bdev(desc);
+	struct spdk_bdev_io *bdev_io;
+	struct spdk_bdev_channel *channel = spdk_io_channel_get_ctx(ch);
+
+	bdev_io = bdev_channel_get_io(channel);
+	if (!bdev_io) {
+		return -ENOMEM;
+	}
+
+	bdev_io->internal.ch = channel;
+	bdev_io->internal.desc = desc;
+	bdev_io->type = SPDK_BDEV_IO_TYPE_GET_ZONE_INFO;
+	bdev_io->u.zone_mgmt.zone_id = zone_id;
+	bdev_io->u.zone_mgmt.zone_action = SPDK_BDEV_ZONE_EXT_REPORT;
+	bdev_io->u.zone_mgmt.num_zones = num_zones;
+	bdev_io->u.zone_mgmt.buf = info;
+	bdev_io_init(bdev_io, bdev, cb_arg, cb);
+
+	bdev_io_submit(bdev_io);
+	return 0;
+}
+
+int
+spdk_bdev_set_zone_ext_info(struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
+			  uint64_t zone_id, void *ext_buf, spdk_bdev_io_completion_cb cb, void *cb_arg)
+{
+	struct spdk_bdev *bdev = spdk_bdev_desc_get_bdev(desc);
+	struct spdk_bdev_io *bdev_io;
+	struct spdk_bdev_channel *channel = spdk_io_channel_get_ctx(ch);
+
+	bdev_io = bdev_channel_get_io(channel);
+	if (!bdev_io) {
+		return -ENOMEM;
+	}
+
+	bdev_io->internal.ch = channel;
+	bdev_io->internal.desc = desc;
+	bdev_io->type = SPDK_BDEV_IO_TYPE_ZONE_MANAGEMENT;
+	bdev_io->u.zone_mgmt.zone_action = SPDK_BDEV_ZONE_SET_ZDE;
+	bdev_io->u.zone_mgmt.zone_id = zone_id;
+	bdev_io->u.zone_mgmt.num_zones = 1;
+	bdev_io->u.zone_mgmt.buf = ext_buf;
 	bdev_io_init(bdev_io, bdev, cb_arg, cb);
 
 	bdev_io_submit(bdev_io);
