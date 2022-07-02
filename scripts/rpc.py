@@ -862,37 +862,37 @@ if __name__ == "__main__":
     p.add_argument('latency_us', help='new latency value in microseconds.', type=int)
     p.set_defaults(func=bdev_delay_update_latency)
 
-    def bdev_congctrl_create(args):
-        print_json(rpc.bdev.bdev_congctrl_create(args.client,
+    def bdev_detzone_create(args):
+        print_json(rpc.bdev.bdev_detzone_create(args.client,
                                               base_bdev_name=args.base_bdev_name,
                                               name=args.name,
                                               num_pu=args.num_pu))
 
-    p = subparsers.add_parser('bdev_congctrl_create',
-                              help='Add a congctrl bdev on existing bdev')
+    p = subparsers.add_parser('bdev_detzone_create',
+                              help='Add a detzone bdev on existing bdev')
     p.add_argument('-b', '--base-bdev-name', help="Name of the existing bdev", required=True)
     p.add_argument('-d', '--name', help="Name of the delay bdev", required=True)
     p.add_argument('-p', '--num-pu', help="Number of PU (dies) in the SSD", required=True, type=int)
-    p.set_defaults(func=bdev_congctrl_create)
+    p.set_defaults(func=bdev_detzone_create)
 
-    def bdev_congctrl_delete(args):
-        rpc.bdev.bdev_congctrl_delete(args.client,
+    def bdev_detzone_delete(args):
+        rpc.bdev.bdev_detzone_delete(args.client,
                                    name=args.name)
 
-    p = subparsers.add_parser('bdev_congctrl_delete', help='Delete a congctrl bdev')
-    p.add_argument('name', help='congctrl bdev name')
-    p.set_defaults(func=bdev_congctrl_delete)
+    p = subparsers.add_parser('bdev_detzone_delete', help='Delete a detzone bdev')
+    p.add_argument('name', help='detzone bdev name')
+    p.set_defaults(func=bdev_detzone_delete)
 
-    def bdev_congctrl_ns_create(args):
-        rpc.bdev.bdev_congctrl_ns_create(args.client,
+    def bdev_detzone_ns_create(args):
+        rpc.bdev.bdev_detzone_ns_create(args.client,
                                    ns_name=args.ns_name, ctrl_name=args.ctrl_name,
                                    zone_array_size=args.zone_array_size, stripe_size=args.stripe_size,
                                    block_align=args.block_align, start_base_zone=args.start_base_zone,
                                    num_base_zones=args.num_base_zones)
 
-    p = subparsers.add_parser('bdev_congctrl_ns_create', help='Create a congctrl namespace bdev')
-    p.add_argument('ns_name', help='congctrl namespace bdev name')
-    p.add_argument('ctrl_name', help='base congctrl bdev name')
+    p = subparsers.add_parser('bdev_detzone_ns_create', help='Create a detzone namespace bdev')
+    p.add_argument('ns_name', help='detzone namespace bdev name')
+    p.add_argument('ctrl_name', help='base detzone bdev name')
     p.add_argument('-a', '--zone-array-size',
                    help="number of phys zones in a logical zone", required=False, type=int)
     p.add_argument('-s', '--stripe-size',
@@ -904,16 +904,16 @@ if __name__ == "__main__":
     p.add_argument('-n', '--num-phys-zones',
                    help="size of namespace in phys zones", required=True, type=int)
 
-    p.set_defaults(func=bdev_congctrl_ns_create)
+    p.set_defaults(func=bdev_detzone_ns_create)
 
-    def bdev_congctrl_ns_delete(args):
-        rpc.bdev.bdev_congctrl_ns_delete(args.client,
+    def bdev_detzone_ns_delete(args):
+        rpc.bdev.bdev_detzone_ns_delete(args.client,
                                    ns_name=args.ns_name, ctrl_name=args.ctrl_name)
 
-    p = subparsers.add_parser('bdev_congctrl_ns_delete', help='Delete a congctrl namespace bdev')
-    p.add_argument('ns_name', help='congctrl namespace bdev name')
-    p.add_argument('ctrl_name', help='base congctrl bdev name')
-    p.set_defaults(func=bdev_congctrl_ns_delete)
+    p = subparsers.add_parser('bdev_detzone_ns_delete', help='Delete a detzone namespace bdev')
+    p.add_argument('ns_name', help='detzone namespace bdev name')
+    p.add_argument('ctrl_name', help='base detzone bdev name')
+    p.set_defaults(func=bdev_detzone_ns_delete)
 
     def bdev_error_create(args):
         print_json(rpc.bdev.bdev_error_create(args.client,

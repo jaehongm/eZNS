@@ -39,8 +39,9 @@ SO_MINOR := 0
 
 CFLAGS += -I$(SPDK_ROOT_DIR)/lib/bdev/
 
-C_SRCS = vbdev_congctrl.c vbdev_congctrl_rpc.c
-LIBNAME = bdev_congctrl
+C_SRCS = vbdev_detzone.c vbdev_detzone_rpc.c vbdev_detzone_arbiter.c \
+		 vbdev_detzone_iosched.c
+LIBNAME = bdev_detzone
 
 SPDK_MAP_FILE = $(SPDK_ROOT_DIR)/mk/spdk_blank.map
 

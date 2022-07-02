@@ -960,8 +960,8 @@ def bdev_delay_update_latency(client, delay_bdev_name, latency_type, latency_us)
     }
     return client.call('bdev_delay_update_latency', params)
 
-def bdev_congctrl_create(client, base_bdev_name, name, num_pu):
-    """Construct a congctrl block device.
+def bdev_detzone_create(client, base_bdev_name, name, num_pu):
+    """Construct a detzone block device.
 
     Args:
         base_bdev_name: name of the existing bdev
@@ -976,26 +976,26 @@ def bdev_congctrl_create(client, base_bdev_name, name, num_pu):
         'name': name,
         'num_pu': num_pu,
     }
-    return client.call('bdev_congctrl_create', params)
+    return client.call('bdev_detzone_create', params)
 
 
-def bdev_congctrl_delete(client, name):
-    """Remove congctrl bdev from the system.
+def bdev_detzone_delete(client, name):
+    """Remove detzone bdev from the system.
 
     Args:
-        name: name of congctrl bdev to delete
+        name: name of detzone bdev to delete
     """
     params = {'name': name}
-    return client.call('bdev_congctrl_delete', params)
+    return client.call('bdev_detzone_delete', params)
 
 
-def bdev_congctrl_ns_create(client, ns_name, ctrl_name, zone_array_size,
+def bdev_detzone_ns_create(client, ns_name, ctrl_name, zone_array_size,
                          stripe_size, block_align, start_base_zone, num_base_zones):
-    """Create congctrl namespace bdev from the system.
+    """Create detzone namespace bdev from the system.
 
     Args:
         ns_name: name of namesapce bdev to create
-        ctrl_name: name of base congctrl bdev
+        ctrl_name: name of base detzone bdev
         zone_array_size
         stripe_size
         block_align
@@ -1011,20 +1011,20 @@ def bdev_congctrl_ns_create(client, ns_name, ctrl_name, zone_array_size,
         'start_base_zone': start_base_zone,
         'num_base_zones': num_base_zones,
     }
-    return client.call('bdev_congctrl_ns_create', params)
+    return client.call('bdev_detzone_ns_create', params)
 
-def bdev_congctrl_ns_delete(client, ns_name, ctrl_name):
-    """Delete congctrl namespace bdev from the system.
+def bdev_detzone_ns_delete(client, ns_name, ctrl_name):
+    """Delete detzone namespace bdev from the system.
 
     Args:
         ns_name: name of namesapce bdev to delete
-        ctrl_name: name of base congctrl bdev
+        ctrl_name: name of base detzone bdev
     """
     params = {
         'ns_name': ns_name,
         'ctrl_name': ctrl_name
     }
-    return client.call('bdev_congctrl_ns_delete', params)
+    return client.call('bdev_detzone_ns_delete', params)
 
 @deprecated_alias('delete_error_bdev')
 def bdev_error_delete(client, name):

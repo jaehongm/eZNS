@@ -32,51 +32,51 @@
  *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "vbdev_congctrl_internal.h"
-#include "vbdev_congctrl.h"
+#include "vbdev_detzone_internal.h"
+#include "vbdev_detzone.h"
 #include "spdk/rpc.h"
 #include "spdk/util.h"
 #include "spdk/string.h"
 #include "spdk/log.h"
 #include "spdk_internal/assert.h"
 
-struct rpc_construct_congctrl {
+struct rpc_construct_detzone {
 	char *base_bdev_name;
 	char *name;
 	uint32_t num_pu;
 };
 
 static void
-free_rpc_construct_congctrl(struct rpc_construct_congctrl *r)
+free_rpc_construct_detzone(struct rpc_construct_detzone *r)
 {
 	free(r->base_bdev_name);
 	free(r->name);
 }
 
-static const struct spdk_json_object_decoder rpc_construct_congctrl_decoders[] = {
-	{"base_bdev_name", offsetof(struct rpc_construct_congctrl, base_bdev_name), spdk_json_decode_string},
-	{"name", offsetof(struct rpc_construct_congctrl, name), spdk_json_decode_string},
-	{"num_pu", offsetof(struct rpc_construct_congctrl, num_pu), spdk_json_decode_uint32},
+static const struct spdk_json_object_decoder rpc_construct_detzone_decoders[] = {
+	{"base_bdev_name", offsetof(struct rpc_construct_detzone, base_bdev_name), spdk_json_decode_string},
+	{"name", offsetof(struct rpc_construct_detzone, name), spdk_json_decode_string},
+	{"num_pu", offsetof(struct rpc_construct_detzone, num_pu), spdk_json_decode_uint32},
 };
 
 static void
-rpc_bdev_congctrl_create(struct spdk_jsonrpc_request *request,
+rpc_bdev_detzone_create(struct spdk_jsonrpc_request *request,
 		      const struct spdk_json_val *params)
 {
-	struct rpc_construct_congctrl req = {NULL};
+	struct rpc_construct_detzone req = {NULL};
 	struct spdk_json_write_ctx *w;
 	int rc;
 
-	if (spdk_json_decode_object(params, rpc_construct_congctrl_decoders,
-				    SPDK_COUNTOF(rpc_construct_congctrl_decoders),
+	if (spdk_json_decode_object(params, rpc_construct_detzone_decoders,
+				    SPDK_COUNTOF(rpc_construct_detzone_decoders),
 				    &req)) {
-		SPDK_DEBUGLOG(vbdev_congctrl, "spdk_json_decode_object failed\n");
+		SPDK_DEBUGLOG(vbdev_detzone, "spdk_json_decode_object failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
 						 "spdk_json_decode_object failed");
 		goto cleanup;
 	}
 
-	rc = create_congctrl_disk(req.base_bdev_name, req.name, req.num_pu);
+	rc = create_detzone_disk(req.base_bdev_name, req.name, req.num_pu);
 	if (rc != 0) {
 		spdk_jsonrpc_send_error_response(request, rc, spdk_strerror(-rc));
 		goto cleanup;
@@ -87,26 +87,26 @@ rpc_bdev_congctrl_create(struct spdk_jsonrpc_request *request,
 	spdk_jsonrpc_end_result(request, w);
 
 cleanup:
-	free_rpc_construct_congctrl(&req);
+	free_rpc_construct_detzone(&req);
 }
-SPDK_RPC_REGISTER("bdev_congctrl_create", rpc_bdev_congctrl_create, SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER("bdev_detzone_create", rpc_bdev_detzone_create, SPDK_RPC_RUNTIME)
 
-struct rpc_delete_congctrl {
+struct rpc_delete_detzone {
 	char *name;
 };
 
 static void
-free_rpc_delete_congctrl(struct rpc_delete_congctrl *req)
+free_rpc_delete_detzone(struct rpc_delete_detzone *req)
 {
 	free(req->name);
 }
 
-static const struct spdk_json_object_decoder rpc_delete_congctrl_decoders[] = {
-	{"name", offsetof(struct rpc_delete_congctrl, name), spdk_json_decode_string},
+static const struct spdk_json_object_decoder rpc_delete_detzone_decoders[] = {
+	{"name", offsetof(struct rpc_delete_detzone, name), spdk_json_decode_string},
 };
 
 static void
-rpc_bdev_congctrl_delete_cb(void *cb_arg, int bdeverrno)
+rpc_bdev_detzone_delete_cb(void *cb_arg, int bdeverrno)
 {
 	struct spdk_jsonrpc_request *request = cb_arg;
 
@@ -114,14 +114,14 @@ rpc_bdev_congctrl_delete_cb(void *cb_arg, int bdeverrno)
 }
 
 static void
-rpc_bdev_congctrl_delete(struct spdk_jsonrpc_request *request,
+rpc_bdev_detzone_delete(struct spdk_jsonrpc_request *request,
 		      const struct spdk_json_val *params)
 {
-	struct rpc_delete_congctrl req = {NULL};
+	struct rpc_delete_detzone req = {NULL};
 	struct spdk_bdev *bdev;
 
-	if (spdk_json_decode_object(params, rpc_delete_congctrl_decoders,
-				    SPDK_COUNTOF(rpc_delete_congctrl_decoders),
+	if (spdk_json_decode_object(params, rpc_delete_detzone_decoders,
+				    SPDK_COUNTOF(rpc_delete_detzone_decoders),
 				    &req)) {
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
 						 "spdk_json_decode_object failed");
@@ -134,14 +134,14 @@ rpc_bdev_congctrl_delete(struct spdk_jsonrpc_request *request,
 		goto cleanup;
 	}
 
-	delete_congctrl_disk(bdev, rpc_bdev_congctrl_delete_cb, request);
+	delete_detzone_disk(bdev, rpc_bdev_detzone_delete_cb, request);
 
 cleanup:
-	free_rpc_delete_congctrl(&req);
+	free_rpc_delete_detzone(&req);
 }
-SPDK_RPC_REGISTER("bdev_congctrl_delete", rpc_bdev_congctrl_delete, SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER("bdev_detzone_delete", rpc_bdev_detzone_delete, SPDK_RPC_RUNTIME)
 
-struct rpc_construct_congctrl_ns {
+struct rpc_construct_detzone_ns {
 	char *ns_name;
 	char *ctrl_name;
 	uint32_t zone_array_size;
@@ -152,40 +152,40 @@ struct rpc_construct_congctrl_ns {
 };
 
 static void
-free_rpc_construct_congctrl_ns(struct rpc_construct_congctrl_ns *r)
+free_rpc_construct_detzone_ns(struct rpc_construct_detzone_ns *r)
 {
 	free(r->ns_name);
 	free(r->ctrl_name);
 }
 
-static const struct spdk_json_object_decoder rpc_construct_congctrl_ns_decoders[] = {
-	{"ns_name", offsetof(struct rpc_construct_congctrl_ns, ns_name), spdk_json_decode_string},
-	{"ctrl_name", offsetof(struct rpc_construct_congctrl_ns, ctrl_name), spdk_json_decode_string},
-	{"zone_array_size", offsetof(struct rpc_construct_congctrl_ns, zone_array_size), spdk_json_decode_uint32, true},
-	{"stripe_size", offsetof(struct rpc_construct_congctrl_ns, stripe_size), spdk_json_decode_uint32, true},
-	{"block_align", offsetof(struct rpc_construct_congctrl_ns, block_align), spdk_json_decode_uint32, true},
-	{"start_base_zone", offsetof(struct rpc_construct_congctrl_ns, start_base_zone), spdk_json_decode_uint64, false},
-	{"num_base_zones", offsetof(struct rpc_construct_congctrl_ns, num_base_zones), spdk_json_decode_uint64, false},
+static const struct spdk_json_object_decoder rpc_construct_detzone_ns_decoders[] = {
+	{"ns_name", offsetof(struct rpc_construct_detzone_ns, ns_name), spdk_json_decode_string},
+	{"ctrl_name", offsetof(struct rpc_construct_detzone_ns, ctrl_name), spdk_json_decode_string},
+	{"zone_array_size", offsetof(struct rpc_construct_detzone_ns, zone_array_size), spdk_json_decode_uint32, true},
+	{"stripe_size", offsetof(struct rpc_construct_detzone_ns, stripe_size), spdk_json_decode_uint32, true},
+	{"block_align", offsetof(struct rpc_construct_detzone_ns, block_align), spdk_json_decode_uint32, true},
+	{"start_base_zone", offsetof(struct rpc_construct_detzone_ns, start_base_zone), spdk_json_decode_uint64, false},
+	{"num_base_zones", offsetof(struct rpc_construct_detzone_ns, num_base_zones), spdk_json_decode_uint64, false},
 };
 
 static void
-rpc_bdev_congctrl_ns_create(struct spdk_jsonrpc_request *request,
+rpc_bdev_detzone_ns_create(struct spdk_jsonrpc_request *request,
 		      const struct spdk_json_val *params)
 {
-	struct rpc_construct_congctrl_ns req = {NULL};
+	struct rpc_construct_detzone_ns req = {NULL};
 	struct spdk_json_write_ctx *w;
 	int rc;
 
-	if (spdk_json_decode_object(params, rpc_construct_congctrl_ns_decoders,
-				    SPDK_COUNTOF(rpc_construct_congctrl_ns_decoders),
+	if (spdk_json_decode_object(params, rpc_construct_detzone_ns_decoders,
+				    SPDK_COUNTOF(rpc_construct_detzone_ns_decoders),
 				    &req)) {
-		SPDK_DEBUGLOG(vbdev_congctrl, "spdk_json_decode_object failed\n");
+		SPDK_DEBUGLOG(vbdev_detzone, "spdk_json_decode_object failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
 						 "spdk_json_decode_object failed");
 		goto cleanup;
 	}
 
-	rc = create_congctrl_ns(req.ctrl_name, req.ns_name,
+	rc = create_detzone_ns(req.ctrl_name, req.ns_name,
 							 req.zone_array_size, req.stripe_size, req.block_align,
 							 req.start_base_zone, req.num_base_zones);
 	if (rc != 0) {
@@ -198,29 +198,29 @@ rpc_bdev_congctrl_ns_create(struct spdk_jsonrpc_request *request,
 	spdk_jsonrpc_end_result(request, w);
 
 cleanup:
-	free_rpc_construct_congctrl_ns(&req);
+	free_rpc_construct_detzone_ns(&req);
 }
-SPDK_RPC_REGISTER("bdev_congctrl_ns_create", rpc_bdev_congctrl_ns_create, SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER("bdev_detzone_ns_create", rpc_bdev_detzone_ns_create, SPDK_RPC_RUNTIME)
 
-struct rpc_delete_congctrl_ns {
+struct rpc_delete_detzone_ns {
 	char *ns_name;
 	char *ctrl_name;
 };
 
 static void
-free_rpc_delete_congctrl_ns(struct rpc_delete_congctrl_ns *req)
+free_rpc_delete_detzone_ns(struct rpc_delete_detzone_ns *req)
 {
 	free(req->ns_name);
 	free(req->ctrl_name);
 }
 
-static const struct spdk_json_object_decoder rpc_delete_congctrl_ns_decoders[] = {
-	{"ns_name", offsetof(struct rpc_delete_congctrl_ns, ns_name), spdk_json_decode_string},
-	{"ctrl_name", offsetof(struct rpc_delete_congctrl_ns, ctrl_name), spdk_json_decode_string},
+static const struct spdk_json_object_decoder rpc_delete_detzone_ns_decoders[] = {
+	{"ns_name", offsetof(struct rpc_delete_detzone_ns, ns_name), spdk_json_decode_string},
+	{"ctrl_name", offsetof(struct rpc_delete_detzone_ns, ctrl_name), spdk_json_decode_string},
 };
 
 static void
-rpc_bdev_congctrl_ns_delete_cb(void *cb_arg, int bdeverrno)
+rpc_bdev_detzone_ns_delete_cb(void *cb_arg, int bdeverrno)
 {
 	struct spdk_jsonrpc_request *request = cb_arg;
 
@@ -228,14 +228,14 @@ rpc_bdev_congctrl_ns_delete_cb(void *cb_arg, int bdeverrno)
 }
 
 static void
-rpc_bdev_congctrl_ns_delete(struct spdk_jsonrpc_request *request,
+rpc_bdev_detzone_ns_delete(struct spdk_jsonrpc_request *request,
 		      const struct spdk_json_val *params)
 {
-	struct rpc_delete_congctrl_ns req = {NULL};
+	struct rpc_delete_detzone_ns req = {NULL};
 	struct spdk_bdev *bdev;
 
-	if (spdk_json_decode_object(params, rpc_delete_congctrl_ns_decoders,
-				    SPDK_COUNTOF(rpc_delete_congctrl_ns_decoders),
+	if (spdk_json_decode_object(params, rpc_delete_detzone_ns_decoders,
+				    SPDK_COUNTOF(rpc_delete_detzone_ns_decoders),
 				    &req)) {
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
 						 "spdk_json_decode_object failed");
@@ -248,9 +248,9 @@ rpc_bdev_congctrl_ns_delete(struct spdk_jsonrpc_request *request,
 		goto cleanup;
 	}
 
-	delete_congctrl_ns(bdev, rpc_bdev_congctrl_ns_delete_cb, request);
+	delete_detzone_ns(bdev, rpc_bdev_detzone_ns_delete_cb, request);
 
 cleanup:
-	free_rpc_delete_congctrl_ns(&req);
+	free_rpc_delete_detzone_ns(&req);
 }
-SPDK_RPC_REGISTER("bdev_congctrl_ns_delete", rpc_bdev_congctrl_ns_delete, SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER("bdev_detzone_ns_delete", rpc_bdev_detzone_ns_delete, SPDK_RPC_RUNTIME)

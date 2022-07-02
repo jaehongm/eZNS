@@ -31,23 +31,21 @@
  *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef SPDK_VBDEV_CONGCTRL_INTERNAL_H
-#define SPDK_VBDEV_CONGCTRL_INTERNAL_H
-
-#include "spdk/stdinc.h"
+#ifndef SPDK_VBDEV_DETZONE_INTERNAL_H
+#define SPDK_VBDEV_DETZONE_INTERNAL_H
 
 #include "spdk/bdev.h"
 #include "spdk/bdev_module.h"
 
-enum congctrl_io_type {
-	CONGCTRL_IO_NONE,
-	CONGCTRL_IO_READ,
-	CONGCTRL_IO_WRITE,
-	CONGCTRL_IO_MGMT
+enum detzone_io_type {
+	DETZONE_IO_NONE,
+	DETZONE_IO_READ,
+	DETZONE_IO_WRITE,
+	DETZONE_IO_MGMT
 };
 
 /* Data structures for congestion control */
-struct congctrl_sched {
+struct detzone_sched {
 	uint64_t thresh_ticks;
 	uint64_t thresh_residue;
 	uint64_t ewma_ticks;
@@ -58,7 +56,7 @@ struct congctrl_sched {
 	uint64_t tokens;
 };
 
-struct congctrl_bdev_io {
+struct detzone_bdev_io {
 	int status;
 
 	uint64_t submit_tick;
@@ -71,53 +69,53 @@ struct congctrl_bdev_io {
 	struct spdk_io_channel *ch;
 	struct spdk_bdev_io_wait_entry bdev_io_wait;
 	
-	enum congctrl_io_type type;
-	struct congctrl_sched *sched;
+	enum detzone_io_type type;
+	struct detzone_sched *sched;
 
 	struct iovec child_iovs[32];
 
-	TAILQ_ENTRY(congctrl_bdev_io) link;
+	TAILQ_ENTRY(detzone_bdev_io) link;
 };
 
-struct congctrl_io_channel {
+struct detzone_io_channel {
 	uint32_t 	ch_id;
 	struct spdk_io_channel	*base_ch; /* IO channel of base device */
 
 	uint64_t	ch_lzslba;	/* current Logical ZSLBA (only one opened logical ZONE at a time) */
-	//struct congctrl_cong	rd_cong;
-	//struct congctrl_cong	wr_cong;
+	//struct detzone_cong	rd_cong;
+	//struct detzone_cong	wr_cong;
 	uint64_t	rd_avail_window;
 	uint64_t	wr_avail_window;
 
-	TAILQ_HEAD(, congctrl_bdev_io)	rd_slidewin_queue;
-	TAILQ_HEAD(, congctrl_bdev_io)	wr_slidewin_queue;
-	TAILQ_HEAD(, congctrl_bdev_io)	write_drr_queue;
+	TAILQ_HEAD(, detzone_bdev_io)	rd_slidewin_queue;
+	TAILQ_HEAD(, detzone_bdev_io)	wr_slidewin_queue;
+	TAILQ_HEAD(, detzone_bdev_io)	write_drr_queue;
 };
 
-struct congctrl_mgmt_channel {
+struct detzone_mgmt_channel {
 	struct spdk_poller *io_poller;
 };
 
-#define VBDEV_CONGCTRL_EWMA_PARAM 	  4	// Weight = 1/(2^VBDEV_CONGCTRL_EWMA_PARAM)
-#define VBDEV_CONGCTRL_LATHRES_EWMA_PARAM 4	// Weight = 1/(2^VBDEV_CONGCTRL_LATHRES_EWMA_PARAM)
-#define VBDEV_CONGCTRL_SLIDEWIN_MAX   (128*1024UL)
+#define VBDEV_DETZONE_EWMA_PARAM 	  4	// Weight = 1/(2^VBDEV_DETZONE_EWMA_PARAM)
+#define VBDEV_DETZONE_LATHRES_EWMA_PARAM 4	// Weight = 1/(2^VBDEV_DETZONE_LATHRES_EWMA_PARAM)
+#define VBDEV_DETZONE_SLIDEWIN_MAX   (128*1024UL)
 
-enum vbdev_congctrl_rate_state {
-	VBDEV_CONGCTRL_RATE_SUBMITTABLE,
-	VBDEV_CONGCTRL_RATE_SUBMITTABLE_READONLY,
-	VBDEV_CONGCTRL_RATE_DEFERRED,
-	VBDEV_CONGCTRL_RATE_OVERLOADED,
-	VBDEV_CONGCTRL_RATE_CONGESTION,
-	VBDEV_CONGCTRL_RATE_SLOWSTART,
-	VBDEV_CONGCTRL_RATE_DRAINING,
-	VBDEV_CONGCTRL_RATE_OK
+enum vbdev_detzone_rate_state {
+	VBDEV_DETZONE_RATE_SUBMITTABLE,
+	VBDEV_DETZONE_RATE_SUBMITTABLE_READONLY,
+	VBDEV_DETZONE_RATE_DEFERRED,
+	VBDEV_DETZONE_RATE_OVERLOADED,
+	VBDEV_DETZONE_RATE_CONGESTION,
+	VBDEV_DETZONE_RATE_SLOWSTART,
+	VBDEV_DETZONE_RATE_DRAINING,
+	VBDEV_DETZONE_RATE_OK
 };
 
-#define VBDEV_CONGCTRL_EWMA(ewma, raw, param) \
+#define VBDEV_DETZONE_EWMA(ewma, raw, param) \
 	((raw >> param) + (ewma) - (ewma >> param))
 
 
-struct vbdev_congctrl_iosched_ops {
+struct vbdev_detzone_iosched_ops {
 	void*	(*init)(void *ctx);
 	void 	(*destroy)(void *ctx);
 	int 	(*enqueue)(void *ctx, void *req);
@@ -125,13 +123,13 @@ struct vbdev_congctrl_iosched_ops {
 	void	(*flush)(void *ctx);
  };
 
-enum vbdev_congctrl_ns_state {
-	VBDEV_CONGCTRL_NS_STATE_ACTIVE,
-	VBDEV_CONGCTRL_NS_STATE_CLOSE,
-	VBDEV_CONGCTRL_NS_STATE_PENDING
+enum vbdev_detzone_ns_state {
+	VBDEV_DETZONE_NS_STATE_ACTIVE,
+	VBDEV_DETZONE_NS_STATE_CLOSE,
+	VBDEV_DETZONE_NS_STATE_PENDING
 };
 
-struct vbdev_congctrl_ns_zone_info {
+struct vbdev_detzone_ns_zone_info {
 	uint64_t			write_pointer;
 	uint64_t			capacity;
 	uint32_t			pu_group;
@@ -140,9 +138,9 @@ struct vbdev_congctrl_ns_zone_info {
 	uint64_t			base_zone_id[0];
 };
 
-struct vbdev_congctrl_ns {
+struct vbdev_detzone_ns {
 	void					*ctrl;
-	struct spdk_bdev		congctrl_ns_bdev;    /* the congctrl ns virtual bdev */
+	struct spdk_bdev		detzone_ns_bdev;    /* the detzone ns virtual bdev */
 	struct spdk_thread 		*thread;  /* thread where the namespace is opened */
 	
 	uint32_t	nsid;
@@ -163,18 +161,18 @@ struct vbdev_congctrl_ns {
 	 * Namespace functions must not to write to these field directly.
 	 * Any function accesses these field should aquire lock first.
 	 */
-	struct __congctrl_ns_internal {
+	struct __detzone_ns_internal {
 		pthread_spinlock_t	lock;
-		enum vbdev_congctrl_ns_state ns_state;
+		enum vbdev_detzone_ns_state ns_state;
 	} internal;
 
-	TAILQ_ENTRY(vbdev_congctrl_ns)	link;
-	TAILQ_ENTRY(vbdev_congctrl_ns)	state_link;
+	TAILQ_ENTRY(vbdev_detzone_ns)	link;
+	TAILQ_ENTRY(vbdev_detzone_ns)	state_link;
 
-	struct vbdev_congctrl_ns_zone_info zone_info[0];
+	struct vbdev_detzone_ns_zone_info zone_info[0];
 };
 
-struct vbdev_congctrl_zone_md {
+struct vbdev_detzone_zone_md {
 	uint32_t			ns_id;
 	uint64_t			lzone_id;
 	uint32_t			stripe_id;
@@ -185,7 +183,7 @@ struct vbdev_congctrl_zone_md {
 	char reserved[40];
 };
 
-struct vbdev_congctrl_zone_info {
+struct vbdev_detzone_zone_info {
 	uint64_t			zone_id;
 	uint64_t			write_pointer;
 	uint64_t			capacity;
@@ -199,15 +197,15 @@ struct vbdev_congctrl_zone_info {
 	uint32_t			stripe_size;
 
 	uint32_t			pu_group;
-	STAILQ_ENTRY(vbdev_congctrl_zone_info) link;
+	STAILQ_ENTRY(vbdev_detzone_zone_info) link;
 };
 
-/* List of congctrl bdev ctrls and associated info for each. */
-struct vbdev_congctrl {
+/* List of detzone bdev ctrls and associated info for each. */
+struct vbdev_detzone {
 	struct spdk_bdev		*base_bdev; /* the thing we're attaching to */
 	struct spdk_bdev_desc	*base_desc; /* its descriptor we get from open */
-	struct spdk_bdev		mgmt_bdev;    /* the congctrl mgmt bdev */
-	struct spdk_io_channel  *mgmt_ch;	/* the congctrl mgmt channel */
+	struct spdk_bdev		mgmt_bdev;    /* the detzone mgmt bdev */
+	struct spdk_io_channel  *mgmt_ch;	/* the detzone mgmt channel */
 	
 	uint32_t			num_pu;			  /* the number of parallel units (NAND dies) in the SSD */
 	uint64_t 			zone_alloc_cnt;		  /* zone allocation counter */ 
@@ -218,19 +216,19 @@ struct vbdev_congctrl {
 	struct spdk_thread		*thread;    /* thread where base device is opened */
 
 	uint64_t			num_zones;
-	struct vbdev_congctrl_zone_info 	*zone_info;
+	struct vbdev_detzone_zone_info 	*zone_info;
 
-	TAILQ_HEAD(, vbdev_congctrl_ns)	ns;
-	TAILQ_HEAD(, vbdev_congctrl_ns)	ns_active;
-	TAILQ_HEAD(, vbdev_congctrl_ns)	ns_pending;
+	TAILQ_HEAD(, vbdev_detzone_ns)	ns;
+	TAILQ_HEAD(, vbdev_detzone_ns)	ns_active;
+	TAILQ_HEAD(, vbdev_detzone_ns)	ns_pending;
 
-	STAILQ_HEAD(, vbdev_congctrl_zone_info) zone_reserved;
-	STAILQ_HEAD(, vbdev_congctrl_zone_info) zone_empty;
+	STAILQ_HEAD(, vbdev_detzone_zone_info) zone_reserved;
+	STAILQ_HEAD(, vbdev_detzone_zone_info) zone_empty;
 
-	TAILQ_ENTRY(vbdev_congctrl)	link;
+	TAILQ_ENTRY(vbdev_detzone)	link;
 };
 
-struct vbdev_congctrl_ns_mgmt_io_ctx {
+struct vbdev_detzone_ns_mgmt_io_ctx {
 	int status;
 
 	uint32_t remain_ios;
@@ -255,10 +253,10 @@ struct vbdev_congctrl_ns_mgmt_io_ctx {
 		int sc;
 	} nvme_status;
 	struct spdk_bdev_io 		*parent_io;
-	struct vbdev_congctrl_ns 	*congctrl_ns;
+	struct vbdev_detzone_ns 	*detzone_ns;
 };
 
-enum vbdev_congctrl_zns_specific_status_code {
+enum vbdev_detzone_zns_specific_status_code {
 	SPDK_NVME_SC_ZONE_BOUNDARY_ERROR = 0xB8,
 	SPDK_NVME_SC_ZONE_IS_FULL		= 0xB9,
 	SPDK_NVME_SC_ZONE_IS_READONLY	= 0xBA,
@@ -269,4 +267,4 @@ enum vbdev_congctrl_zns_specific_status_code {
 	SPDK_NVME_SC_ZONE_INVALID_STATE		= 0xBF
 };
 
-#endif /* SPDK_VBDEV_CONGCTRL_INTERNAL_H */
+#endif /* SPDK_VBDEV_DETZONE_INTERNAL_H */
