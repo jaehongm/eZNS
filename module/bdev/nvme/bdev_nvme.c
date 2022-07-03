@@ -4880,8 +4880,11 @@ bdev_nvme_get_zone_info_done(void *ref, const struct spdk_nvme_cpl *cpl)
 
 	nsdata_zns = spdk_nvme_zns_ns_get_data(ns);
 	nsdata = spdk_nvme_ns_get_data(ns);
-	zone_report_bufsize = spdk_nvme_ns_get_max_io_xfer_size(ns);
 	zdes = nsdata_zns->lbafe[nsdata->flbas.format].zdes * 64;
+	zone_report_bufsize = spdk_nvme_ns_get_max_io_xfer_size(ns);
+	// Workaround for a potential bug in SSD (counting partial desc as 1)
+	zone_report_bufsize -= (zone_report_bufsize - sizeof(struct spdk_nvme_zns_zone_report)) %
+								(sizeof(struct spdk_nvme_zns_zone_desc) + zdes);
 	if (bdev_io->u.zone_mgmt.zone_action == SPDK_BDEV_ZONE_EXT_REPORT) {
 		max_zones_per_buf = (zone_report_bufsize - sizeof(*bio->zone_report_buf)) /
 					(sizeof(bio->zone_report_buf->descs[0]) + zdes);
@@ -4902,9 +4905,9 @@ bdev_nvme_get_zone_info_done(void *ref, const struct spdk_nvme_cpl *cpl)
 
 	for (i = 0; i < bio->zone_report_buf->nr_zones && bio->handled_zones < zones_to_copy; i++) {
 		if (bdev_io->u.zone_mgmt.zone_action == SPDK_BDEV_ZONE_EXT_REPORT) {
-			ret = fill_zone_ext_from_report(&ext_info[bio->handled_zones],
-							&bio->zone_report_buf->descs[0] +
-							 (sizeof(bio->zone_report_buf->descs[0]) + zdes) * i,
+			ret = fill_zone_ext_from_report(&ext_info[bio->handled_zones], (struct spdk_nvme_zns_zone_desc *)(
+							(uint8_t *)&bio->zone_report_buf->descs[0] +
+							 (sizeof(bio->zone_report_buf->descs[0]) + zdes) * i),
 							spdk_min(SPDK_BDEV_ZONE_MAX_EXT_SIZE, zdes * 64));
 		} else {
 			ret = fill_zone_from_report(&info[bio->handled_zones],
@@ -5445,6 +5448,8 @@ bdev_nvme_get_zone_info(struct nvme_bdev_io *bio, uint64_t zone_id, uint32_t num
 	struct spdk_nvme_ns *ns = bio->io_path->nvme_ns->ns;
 	struct spdk_nvme_qpair *qpair = bio->io_path->ctrlr_ch->qpair;
 	struct spdk_bdev_io *bdev_io = spdk_bdev_io_from_ctx(bio);
+	const struct spdk_nvme_zns_ns_data *nsdata_zns =spdk_nvme_zns_ns_get_data(ns);
+	const struct spdk_nvme_ns_data *nsdata = spdk_nvme_ns_get_data(ns);
 	uint32_t zone_report_bufsize = spdk_nvme_ns_get_max_io_xfer_size(ns);
 	uint64_t zone_size = spdk_nvme_zns_ns_get_zone_size_sectors(ns);
 	uint64_t total_zones = spdk_nvme_zns_ns_get_num_zones(ns);
@@ -5458,6 +5463,10 @@ bdev_nvme_get_zone_info(struct nvme_bdev_io *bio, uint64_t zone_id, uint32_t num
 	}
 
 	assert(!bio->zone_report_buf);
+	// Workaround for a potential bug in SSD (counting partial desc as 1)
+	zone_report_bufsize -= (zone_report_bufsize - sizeof(struct spdk_nvme_zns_zone_report)) %
+								 (sizeof(struct spdk_nvme_zns_zone_desc) +
+								  nsdata_zns->lbafe[nsdata->flbas.format].zdes * 64);
 	bio->zone_report_buf = calloc(1, zone_report_bufsize);
 	if (!bio->zone_report_buf) {
 		return -ENOMEM;
