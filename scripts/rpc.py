@@ -887,7 +887,7 @@ if __name__ == "__main__":
         rpc.bdev.bdev_detzone_ns_create(args.client,
                                    ns_name=args.ns_name, ctrl_name=args.ctrl_name,
                                    zone_array_size=args.zone_array_size, stripe_size=args.stripe_size,
-                                   block_align=args.block_align, start_base_zone=args.start_base_zone,
+                                   block_align=args.block_align,
                                    num_base_zones=args.num_base_zones)
 
     p = subparsers.add_parser('bdev_detzone_ns_create', help='Create a detzone namespace bdev')

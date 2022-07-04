@@ -39,6 +39,8 @@
 
 struct vbdev_detzone;
 
+typedef void (*vbdev_detzone_register_cb)(void *arg, int rc);
+
 /**
  * Create new detzone ns.
  *
@@ -46,9 +48,9 @@ struct vbdev_detzone;
  * \param ns_name Name of the detzone ns.
  * \return 0 on success, other on failure.
  */
-int create_detzone_ns(const char *detzone_name, const char *ns_name,
+int spdk_bdev_create_detzone_ns(const char *detzone_name, const char *ns_name,
 					uint32_t zone_array_size, uint32_t stripe_size, uint32_t block_align,
-					uint64_t start_base_zone, uint64_t num_base_zones);
+					uint64_t num_base_zones);
 
 /**
  * Delete detzone ns.
@@ -57,7 +59,7 @@ int create_detzone_ns(const char *detzone_name, const char *ns_name,
  * \param cb_fn Function to call after deletion.
  * \param cb_arg Argument to pass to cb_fn.
  */
-void delete_detzone_ns(struct spdk_bdev *bdev, spdk_bdev_unregister_cb cb_fn,
+void spdk_bdev_delete_detzone_ns(struct spdk_bdev *bdev, spdk_bdev_unregister_cb cb_fn,
 					void *cb_arg);
 
 
@@ -69,7 +71,8 @@ void delete_detzone_ns(struct spdk_bdev *bdev, spdk_bdev_unregister_cb cb_fn,
  * \param num_pu Number of PU (die) in the SSD.
  * \return 0 on success, other on failure.
  */
-int create_detzone_disk(const char *bdev_name, const char *vbdev_name, uint32_t num_pu);
+int spdk_bdev_create_detzone_disk(const char *bdev_name, const char *vbdev_name, uint32_t num_pu,
+									vbdev_detzone_register_cb cb, void *ctx);
 
 /**
  * Delete detzone ctrl.
@@ -78,7 +81,7 @@ int create_detzone_disk(const char *bdev_name, const char *vbdev_name, uint32_t 
  * \param cb_fn Function to call after deletion.
  * \param cb_arg Argument to pass to cb_fn.
  */
-void delete_detzone_disk(struct spdk_bdev *bdev, spdk_bdev_unregister_cb cb_fn,
+void spdk_bdev_delete_detzone_disk(struct spdk_bdev *bdev, spdk_bdev_unregister_cb cb_fn,
 		       void *cb_arg);
 
 #endif /* SPDK_VBDEV_DETZONE_H */

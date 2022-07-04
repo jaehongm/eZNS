@@ -969,7 +969,7 @@ def bdev_detzone_create(client, base_bdev_name, name, num_pu):
         num_pu: Number of PU (die).
 
     Returns:
-        Name of created block device.
+
     """
     params = {
         'base_bdev_name': base_bdev_name,
@@ -990,7 +990,7 @@ def bdev_detzone_delete(client, name):
 
 
 def bdev_detzone_ns_create(client, ns_name, ctrl_name, zone_array_size,
-                         stripe_size, block_align, start_base_zone, num_base_zones):
+                         stripe_size, block_align, num_base_zones):
     """Create detzone namespace bdev from the system.
 
     Args:
@@ -999,7 +999,6 @@ def bdev_detzone_ns_create(client, ns_name, ctrl_name, zone_array_size,
         zone_array_size
         stripe_size
         block_align
-        start_base_zone
         num_base_zones
     """
     params = {
@@ -1008,7 +1007,6 @@ def bdev_detzone_ns_create(client, ns_name, ctrl_name, zone_array_size,
         'zone_array_size': zone_array_size,
         'stripe_size': stripe_size,
         'block_align': block_align,
-        'start_base_zone': start_base_zone,
         'num_base_zones': num_base_zones,
     }
     return client.call('bdev_detzone_ns_create', params)

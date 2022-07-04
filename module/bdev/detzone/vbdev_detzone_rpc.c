@@ -53,6 +53,23 @@ free_rpc_construct_detzone(struct rpc_construct_detzone *r)
 	free(r->name);
 }
 
+static void
+rpc_bdev_detzone_create_cb(void *ctx, int rc)
+{
+	//struct spdk_json_write_ctx *w;
+	struct spdk_jsonrpc_request *request = ctx;
+
+	if (rc != 0) {
+		spdk_jsonrpc_send_error_response(request, rc, spdk_strerror(-rc));
+	} else {
+		spdk_jsonrpc_send_bool_response(request, true);
+		//w = spdk_jsonrpc_begin_result(request);
+		//spdk_json_write_string(w, req.name);
+		//spdk_jsonrpc_end_result(request, w);
+		//free_rpc_construct_detzone(&req);		
+	}
+}
+
 static const struct spdk_json_object_decoder rpc_construct_detzone_decoders[] = {
 	{"base_bdev_name", offsetof(struct rpc_construct_detzone, base_bdev_name), spdk_json_decode_string},
 	{"name", offsetof(struct rpc_construct_detzone, name), spdk_json_decode_string},
@@ -64,7 +81,6 @@ rpc_bdev_detzone_create(struct spdk_jsonrpc_request *request,
 		      const struct spdk_json_val *params)
 {
 	struct rpc_construct_detzone req = {NULL};
-	struct spdk_json_write_ctx *w;
 	int rc;
 
 	if (spdk_json_decode_object(params, rpc_construct_detzone_decoders,
@@ -76,15 +92,11 @@ rpc_bdev_detzone_create(struct spdk_jsonrpc_request *request,
 		goto cleanup;
 	}
 
-	rc = create_detzone_disk(req.base_bdev_name, req.name, req.num_pu);
+	rc = spdk_bdev_create_detzone_disk(req.base_bdev_name, req.name, req.num_pu,
+										rpc_bdev_detzone_create_cb, request);
 	if (rc != 0) {
 		spdk_jsonrpc_send_error_response(request, rc, spdk_strerror(-rc));
-		goto cleanup;
 	}
-
-	w = spdk_jsonrpc_begin_result(request);
-	spdk_json_write_string(w, req.name);
-	spdk_jsonrpc_end_result(request, w);
 
 cleanup:
 	free_rpc_construct_detzone(&req);
@@ -134,7 +146,7 @@ rpc_bdev_detzone_delete(struct spdk_jsonrpc_request *request,
 		goto cleanup;
 	}
 
-	delete_detzone_disk(bdev, rpc_bdev_detzone_delete_cb, request);
+	spdk_bdev_delete_detzone_disk(bdev, rpc_bdev_detzone_delete_cb, request);
 
 cleanup:
 	free_rpc_delete_detzone(&req);
@@ -147,7 +159,6 @@ struct rpc_construct_detzone_ns {
 	uint32_t zone_array_size;
 	uint32_t stripe_size;
 	uint32_t block_align;
-	uint64_t start_base_zone;
 	uint64_t num_base_zones;
 };
 
@@ -164,7 +175,6 @@ static const struct spdk_json_object_decoder rpc_construct_detzone_ns_decoders[]
 	{"zone_array_size", offsetof(struct rpc_construct_detzone_ns, zone_array_size), spdk_json_decode_uint32, true},
 	{"stripe_size", offsetof(struct rpc_construct_detzone_ns, stripe_size), spdk_json_decode_uint32, true},
 	{"block_align", offsetof(struct rpc_construct_detzone_ns, block_align), spdk_json_decode_uint32, true},
-	{"start_base_zone", offsetof(struct rpc_construct_detzone_ns, start_base_zone), spdk_json_decode_uint64, false},
 	{"num_base_zones", offsetof(struct rpc_construct_detzone_ns, num_base_zones), spdk_json_decode_uint64, false},
 };
 
@@ -185,9 +195,9 @@ rpc_bdev_detzone_ns_create(struct spdk_jsonrpc_request *request,
 		goto cleanup;
 	}
 
-	rc = create_detzone_ns(req.ctrl_name, req.ns_name,
+	rc = spdk_bdev_create_detzone_ns(req.ctrl_name, req.ns_name,
 							 req.zone_array_size, req.stripe_size, req.block_align,
-							 req.start_base_zone, req.num_base_zones);
+							 req.num_base_zones);
 	if (rc != 0) {
 		spdk_jsonrpc_send_error_response(request, rc, spdk_strerror(-rc));
 		goto cleanup;
@@ -248,7 +258,7 @@ rpc_bdev_detzone_ns_delete(struct spdk_jsonrpc_request *request,
 		goto cleanup;
 	}
 
-	delete_detzone_ns(bdev, rpc_bdev_detzone_ns_delete_cb, request);
+	spdk_bdev_delete_detzone_ns(bdev, rpc_bdev_detzone_ns_delete_cb, request);
 
 cleanup:
 	free_rpc_delete_detzone_ns(&req);

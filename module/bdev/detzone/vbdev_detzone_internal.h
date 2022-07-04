@@ -44,18 +44,6 @@ enum detzone_io_type {
 	DETZONE_IO_MGMT
 };
 
-/* Data structures for congestion control */
-struct detzone_sched {
-	uint64_t thresh_ticks;
-	uint64_t thresh_residue;
-	uint64_t ewma_ticks;
-
-	int64_t rate;
-	uint64_t last_update_tsc;
-	uint64_t max_bucket_size;
-	uint64_t tokens;
-};
-
 struct detzone_bdev_io {
 	int status;
 
@@ -70,7 +58,6 @@ struct detzone_bdev_io {
 	struct spdk_bdev_io_wait_entry bdev_io_wait;
 	
 	enum detzone_io_type type;
-	struct detzone_sched *sched;
 
 	struct iovec child_iovs[32];
 
@@ -96,46 +83,20 @@ struct detzone_mgmt_channel {
 	struct spdk_poller *io_poller;
 };
 
-#define VBDEV_DETZONE_EWMA_PARAM 	  4	// Weight = 1/(2^VBDEV_DETZONE_EWMA_PARAM)
-#define VBDEV_DETZONE_LATHRES_EWMA_PARAM 4	// Weight = 1/(2^VBDEV_DETZONE_LATHRES_EWMA_PARAM)
-#define VBDEV_DETZONE_SLIDEWIN_MAX   (128*1024UL)
-
-enum vbdev_detzone_rate_state {
-	VBDEV_DETZONE_RATE_SUBMITTABLE,
-	VBDEV_DETZONE_RATE_SUBMITTABLE_READONLY,
-	VBDEV_DETZONE_RATE_DEFERRED,
-	VBDEV_DETZONE_RATE_OVERLOADED,
-	VBDEV_DETZONE_RATE_CONGESTION,
-	VBDEV_DETZONE_RATE_SLOWSTART,
-	VBDEV_DETZONE_RATE_DRAINING,
-	VBDEV_DETZONE_RATE_OK
-};
-
-#define VBDEV_DETZONE_EWMA(ewma, raw, param) \
-	((raw >> param) + (ewma) - (ewma >> param))
-
-
-struct vbdev_detzone_iosched_ops {
-	void*	(*init)(void *ctx);
-	void 	(*destroy)(void *ctx);
-	int 	(*enqueue)(void *ctx, void *req);
-	void*	(*dequeue)(void *ctx);
-	void	(*flush)(void *ctx);
- };
-
 enum vbdev_detzone_ns_state {
 	VBDEV_DETZONE_NS_STATE_ACTIVE,
 	VBDEV_DETZONE_NS_STATE_CLOSE,
 	VBDEV_DETZONE_NS_STATE_PENDING
 };
 
+#define DETZONE_MAX_STRIPE_WIDTH 32
+
 struct vbdev_detzone_ns_zone_info {
 	uint64_t			write_pointer;
 	uint64_t			capacity;
-	uint32_t			pu_group;
 	enum spdk_bdev_zone_state	state;
-	enum spdk_bdev_zone_state	next_state; /* state to be transitioned next */
-	uint64_t			base_zone_id[0];
+
+	uint64_t			base_zone_id[DETZONE_MAX_STRIPE_WIDTH];
 };
 
 struct vbdev_detzone_ns {
@@ -146,7 +107,7 @@ struct vbdev_detzone_ns {
 	uint32_t	nsid;
 	bool		active;
 	uint32_t	ref;
-	uint64_t	num_open_lzones;
+	uint64_t	num_open_zones;
 	uint64_t	base_zone_size;
 	uint64_t	num_base_zones;
 
@@ -158,18 +119,17 @@ struct vbdev_detzone_ns {
 
 	/**
 	 * Fields that are used internally by the mgmt bdev.
-	 * Namespace functions must not to write to these field directly.
-	 * Any function accesses these field should aquire lock first.
+	 * Namespace functions must not to write to these fields directly.
 	 */
 	struct __detzone_ns_internal {
-		pthread_spinlock_t	lock;
 		enum vbdev_detzone_ns_state ns_state;
+		struct vbdev_detzone_ns_zone_info *zone_info;
+		struct spdk_bit_array *epoch_pu_map;	// PU allocation bitmap for the current epoch
+		uint32_t			   epoch_num_pu;	// PU allocation count for the current epoch
 	} internal;
 
 	TAILQ_ENTRY(vbdev_detzone_ns)	link;
 	TAILQ_ENTRY(vbdev_detzone_ns)	state_link;
-
-	struct vbdev_detzone_ns_zone_info zone_info[0];
 };
 
 struct vbdev_detzone_zone_md {
@@ -197,7 +157,7 @@ struct vbdev_detzone_zone_info {
 	uint32_t			stripe_size;
 
 	uint32_t			pu_group;
-	STAILQ_ENTRY(vbdev_detzone_zone_info) link;
+	TAILQ_ENTRY(vbdev_detzone_zone_info) link;
 };
 
 /* List of detzone bdev ctrls and associated info for each. */
@@ -207,7 +167,9 @@ struct vbdev_detzone {
 	struct spdk_bdev		mgmt_bdev;    /* the detzone mgmt bdev */
 	struct spdk_io_channel  *mgmt_ch;	/* the detzone mgmt channel */
 	
-	uint32_t			num_pu;			  /* the number of parallel units (NAND dies) in the SSD */
+	uint32_t			num_pu;			  /* the number of parallel units (NAND dies) */
+	uint32_t			num_zone_reserved;	/* the number of reserved zone */
+	uint32_t			num_zone_empty;		/* the number of empty zone */
 	uint64_t 			zone_alloc_cnt;		  /* zone allocation counter */ 
 
 	uint32_t			num_ns;				/* number of namespace */
@@ -222,11 +184,15 @@ struct vbdev_detzone {
 	TAILQ_HEAD(, vbdev_detzone_ns)	ns_active;
 	TAILQ_HEAD(, vbdev_detzone_ns)	ns_pending;
 
-	STAILQ_HEAD(, vbdev_detzone_zone_info) zone_reserved;
-	STAILQ_HEAD(, vbdev_detzone_zone_info) zone_empty;
+	TAILQ_HEAD(, vbdev_detzone_zone_info) zone_reserved;
+	TAILQ_HEAD(, vbdev_detzone_zone_info) zone_empty;
 
 	TAILQ_ENTRY(vbdev_detzone)	link;
 };
+
+typedef void (*detzone_ns_mgmt_completion_cb)(struct spdk_bdev_io *bdev_io,
+		int sct, int sc,
+		void *cb_arg);
 
 struct vbdev_detzone_ns_mgmt_io_ctx {
 	int status;
@@ -244,16 +210,27 @@ struct vbdev_detzone_ns_mgmt_io_ctx {
 		/* Used to change zoned device zone state */
 		enum spdk_bdev_zone_action zone_action;
 
+		/* Select All flag */
+		bool select_all;
+
 		/* The data buffer */
 		void *buf;
 	} zone_mgmt;
 
 	struct {
+		/** NVMe completion queue entry DW0 */
+		uint32_t cdw0;
+		/** NVMe status code type */
 		int sct;
+		/** NVMe status code */
 		int sc;
 	} nvme_status;
+
 	struct spdk_bdev_io 		*parent_io;
 	struct vbdev_detzone_ns 	*detzone_ns;
+
+	detzone_ns_mgmt_completion_cb cb;
+	void *cb_arg;
 };
 
 enum vbdev_detzone_zns_specific_status_code {
