@@ -90,8 +90,12 @@ enum vbdev_detzone_ns_state {
 };
 
 #define DETZONE_MAX_STRIPE_WIDTH 32
+#define DETZONE_RESERVED_ZONES   1
+#define DETZONE_RESERVATION_BLKS 1
+#define DETZONE_INLINE_META_BLKS 1
 
 struct vbdev_detzone_ns_zone_info {
+	uint64_t			zone_id;
 	uint64_t			write_pointer;
 	uint64_t			capacity;
 	enum spdk_bdev_zone_state	state;
@@ -116,6 +120,7 @@ struct vbdev_detzone_ns {
 	uint32_t	stripe_blocks; /* stripe size (in blocks) */
 	uint32_t	block_align;
 	uint64_t	zcap;		// Logical Zone Capacity
+	uint32_t	padding_blocks;	// num of blocks for padding at the beginning of base zone
 
 	/**
 	 * Fields that are used internally by the mgmt bdev.
@@ -188,6 +193,27 @@ struct vbdev_detzone {
 	TAILQ_HEAD(, vbdev_detzone_zone_info) zone_empty;
 
 	TAILQ_ENTRY(vbdev_detzone)	link;
+};
+
+struct vbdev_detzone_update_ctx {
+	struct vbdev_detzone 		 *detzone_ctrlr;
+	struct vbdev_detzone_ns		 *detzone_ns;
+	struct spdk_bdev_zone_info	 info;
+
+};
+
+typedef void (*detzone_md_io_completion_cb)(void *cb_arg, bool success);
+
+struct vbdev_detzone_md_io_ctx {
+	struct vbdev_detzone *detzone_ctrlr;
+	struct vbdev_detzone_zone_md *zone_md;
+	uint64_t zslba;
+	uint64_t remaining_zones;
+
+	void *buf;
+
+	detzone_md_io_completion_cb cb;
+	void *cb_arg;
 };
 
 typedef void (*detzone_ns_mgmt_completion_cb)(struct spdk_bdev_io *bdev_io,
