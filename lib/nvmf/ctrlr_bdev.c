@@ -37,6 +37,7 @@
 #include "nvmf_internal.h"
 
 #include "spdk/bdev.h"
+#include "spdk/bdev_zone.h"
 #include "spdk/endian.h"
 #include "spdk/thread.h"
 #include "spdk/likely.h"
@@ -123,6 +124,81 @@ nvmf_bdev_ctrlr_complete_cmd(struct spdk_bdev_io *bdev_io, bool success,
 }
 
 static void
+_fill_report_from_zone(struct spdk_nvme_zns_zone_desc *desc, struct spdk_bdev_zone_info *info)
+{
+	desc->zt = SPDK_NVME_ZONE_TYPE_SEQWR;
+	desc->zcap = info->capacity;
+	desc->zslba = info->zone_id;
+	desc->wp = info->write_pointer;
+	switch(info->state) {
+	case SPDK_BDEV_ZONE_STATE_EMPTY:
+		desc->zs = SPDK_NVME_ZONE_STATE_EMPTY;
+		break;
+	case SPDK_BDEV_ZONE_STATE_IMP_OPEN:
+		desc->zs = SPDK_NVME_ZONE_STATE_IOPEN;
+		break;
+	case SPDK_BDEV_ZONE_STATE_FULL:
+		desc->zs = SPDK_NVME_ZONE_STATE_FULL;
+		break;
+	case SPDK_BDEV_ZONE_STATE_CLOSED:
+		desc->zs = SPDK_NVME_ZONE_STATE_CLOSED;
+		break;
+	case SPDK_BDEV_ZONE_STATE_READ_ONLY:
+		desc->zs = SPDK_NVME_ZONE_STATE_RONLY;
+		break;
+	case SPDK_BDEV_ZONE_STATE_OFFLINE:
+		desc->zs = SPDK_NVME_ZONE_STATE_OFFLINE;
+		break;
+	case SPDK_BDEV_ZONE_STATE_EXP_OPEN:
+		desc->zs = SPDK_NVME_ZONE_STATE_EOPEN;
+		break;
+	}
+}
+
+static void
+nvmf_bdev_ctrlr_complete_zone_info_cmd(struct spdk_bdev_io *bdev_io, bool success,
+				   void *cb_arg)
+{
+	struct spdk_nvmf_request *req = cb_arg;
+	struct spdk_nvme_cmd *cmd = &req->cmd->nvme_cmd;
+	struct spdk_nvme_zns_zone_report *report;
+	struct spdk_bdev_zone_info *info;
+	uint64_t next_zone_id;
+	uint32_t num_zones, zone_handled = 0;
+	bool partial = from_le32(&cmd->cdw13) & 0x10000u;
+
+	if (!success) {
+		nvmf_bdev_ctrlr_complete_cmd(bdev_io, success, req);
+		return;	
+	}
+
+	next_zone_id = from_le64(&cmd->cdw10);
+	num_zones = (req->length - sizeof(*report)) / sizeof(struct spdk_nvme_zns_zone_desc);
+	report = req->data;
+
+	if (num_zones) {
+		info = calloc(num_zones, sizeof(*info));
+		memcpy(info, report->descs, num_zones * sizeof(*info));
+		memset(report->descs, 0x0, req->length - sizeof(*report));
+
+		for ( ; zone_handled < num_zones; zone_handled++) {
+			// (temporary) find the end of list
+			if (info[zone_handled].zone_id < next_zone_id || 
+					info[zone_handled].capacity == 0) {
+				break;
+			}
+			_fill_report_from_zone(&report->descs[zone_handled], &info[zone_handled]);
+			next_zone_id = info[zone_handled].zone_id + info[zone_handled].capacity;
+		}
+	}
+
+	if (partial) {
+		report->nr_zones = zone_handled;
+	}
+	nvmf_bdev_ctrlr_complete_cmd(bdev_io, success, req);
+}
+
+static void
 nvmf_bdev_ctrlr_complete_admin_cmd(struct spdk_bdev_io *bdev_io, bool success,
 				   void *cb_arg)
 {
@@ -134,6 +210,30 @@ nvmf_bdev_ctrlr_complete_admin_cmd(struct spdk_bdev_io *bdev_io, bool success,
 
 	nvmf_bdev_ctrlr_complete_cmd(bdev_io, success, req);
 }
+
+bool nvmf_bdev_ctrlr_ns_is_zoned(struct spdk_nvmf_ns *ns)
+{
+	return spdk_bdev_is_zoned(ns->bdev);
+}
+
+uint64_t
+nvmf_bdev_ctrlr_ns_get_zone_size(struct spdk_nvmf_ns *ns)
+{
+	return spdk_bdev_get_zone_size(ns->bdev);
+}
+
+uint32_t
+nvmf_bdev_ctrlr_ns_get_max_active_zones(struct spdk_nvmf_ns *ns)
+{
+	return spdk_bdev_get_max_active_zones(ns->bdev);
+}
+
+uint32_t
+nvmf_bdev_ctrlr_ns_get_max_open_zones(struct spdk_nvmf_ns *ns)
+{
+	return spdk_bdev_get_max_open_zones(ns->bdev);
+}
+
 
 void
 nvmf_bdev_ctrlr_identify_ns(struct spdk_nvmf_ns *ns, struct spdk_nvme_ns_data *nsdata,
@@ -729,6 +829,120 @@ spdk_nvmf_bdev_ctrlr_nvme_passthru_admin(struct spdk_bdev *bdev, struct spdk_bde
 		return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
 	}
 
+	return SPDK_NVMF_REQUEST_EXEC_STATUS_ASYNCHRONOUS;
+}
+
+int
+nvmf_bdev_ctrlr_zone_append_cmd(struct spdk_bdev *bdev, struct spdk_bdev_desc *desc,
+			 struct spdk_io_channel *ch, struct spdk_nvmf_request *req)
+{
+	struct spdk_nvme_cmd *cmd = &req->cmd->nvme_cmd;
+	struct spdk_nvme_cpl *rsp = &req->rsp->nvme_cpl;
+	uint64_t start_lba;
+	uint64_t num_blocks;
+	int rc;
+
+	nvmf_bdev_ctrlr_get_rw_params(cmd, &start_lba, &num_blocks);
+
+	rc = spdk_bdev_zone_appendv(desc, ch, req->iov, req->iovcnt,
+									start_lba, num_blocks, nvmf_bdev_ctrlr_complete_cmd, cmd);
+	if (spdk_unlikely(rc)) {
+		if (rc == -ENOMEM) {
+			nvmf_bdev_ctrl_queue_io(req, bdev, ch, nvmf_ctrlr_process_io_cmd_resubmit, req);
+			return SPDK_NVMF_REQUEST_EXEC_STATUS_ASYNCHRONOUS;
+		}
+		rsp->status.sc = SPDK_NVME_SC_INTERNAL_DEVICE_ERROR;
+		return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
+	}
+	return SPDK_NVMF_REQUEST_EXEC_STATUS_ASYNCHRONOUS;
+}
+
+#define NVMF_BDEV_CTRLR_MAX_ZONE_INFO 64
+
+int
+nvmf_bdev_ctrlr_zone_info_cmd(struct spdk_bdev *bdev, struct spdk_bdev_desc *desc,
+			 struct spdk_io_channel *ch, struct spdk_nvmf_request *req)
+{
+	struct spdk_nvme_cmd *cmd = &req->cmd->nvme_cmd;
+	struct spdk_nvme_cpl *rsp = &req->rsp->nvme_cpl;
+	struct spdk_nvme_zns_zone_report *report;
+	uint64_t zone_id = from_le64(&cmd->cdw10);
+	uint32_t num_dwords = from_le32(&cmd->cdw12);
+	uint8_t zra = from_le32(&cmd->cdw13) & 0xffu;
+	uint8_t zra_opt = (from_le32(&cmd->cdw13) & 0xff00u) >> 8;
+	bool partial = from_le32(&cmd->cdw13) & 0x10000u;
+	size_t num_zones;
+	int rc;
+
+	if (zra != SPDK_NVME_ZONE_REPORT) {
+		SPDK_INFOLOG(nvmf, "Unsupported Zone Report Action: %u\n", zra);
+		rsp->status.sc = SPDK_NVME_SC_INVALID_FIELD;
+		return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
+	} else if (zra_opt != SPDK_NVME_ZRA_LIST_ALL) {
+		SPDK_INFOLOG(nvmf, "Unsupported Zone Report Action opt: %u\n", zra_opt);
+		rsp->status.sc = SPDK_NVME_SC_INTERNAL_DEVICE_ERROR;
+		return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
+	} else if (req->length / 4 < num_dwords) {
+		SPDK_ERRLOG("Not enough buffer for Zone Report\n");
+		rsp->status.sc = SPDK_NVME_SC_INTERNAL_DEVICE_ERROR;
+		return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
+	}
+
+	report = req->data;
+	report->nr_zones = spdk_bdev_get_num_zones(bdev);
+	num_zones = (req->length - sizeof(*report)) / sizeof(struct spdk_nvme_zns_zone_desc);
+
+	if (num_zones == 0) {
+		if (partial) {
+			report->nr_zones = 0;
+		}
+		SPDK_DEBUGLOG(nvmf, "response without zone info data: nr_zones %lu\n", report->nr_zones);
+		return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
+	}
+
+	rc = spdk_bdev_get_zone_info(desc, ch, zone_id,
+									 num_zones, (void*)report->descs, nvmf_bdev_ctrlr_complete_zone_info_cmd, req);
+	if (spdk_unlikely(rc)) {
+		if (rc == -ENOMEM) {
+			nvmf_bdev_ctrl_queue_io(req, bdev, ch, nvmf_ctrlr_process_io_cmd_resubmit, req);
+			return SPDK_NVMF_REQUEST_EXEC_STATUS_ASYNCHRONOUS;
+		}
+		rsp->status.sc = SPDK_NVME_SC_INTERNAL_DEVICE_ERROR;
+		return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
+	}
+	return SPDK_NVMF_REQUEST_EXEC_STATUS_ASYNCHRONOUS;
+}
+
+int
+nvmf_bdev_ctrlr_zone_mgmt_cmd(struct spdk_bdev *bdev, struct spdk_bdev_desc *desc,
+			 struct spdk_io_channel *ch, struct spdk_nvmf_request *req)
+{
+	struct spdk_nvme_cmd *cmd = &req->cmd->nvme_cmd;
+	struct spdk_nvme_cpl *rsp = &req->rsp->nvme_cpl;
+	uint64_t zone_id;
+	uint8_t action;
+	bool sel_all;
+	int rc;
+
+	zone_id = from_le64(&cmd->cdw10);
+	action = from_le32(&cmd->cdw13) & 0xffu;
+	sel_all = from_le32(&cmd->cdw13) & 0x100u ? true : false;
+	if (sel_all) {
+		SPDK_INFOLOG(nvmf, "Select All is not available yet!\n");
+		rsp->status.sc = SPDK_NVME_SC_INTERNAL_DEVICE_ERROR;
+		return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
+	}
+
+	rc = spdk_bdev_zone_management(desc, ch, zone_id,
+									 action, nvmf_bdev_ctrlr_complete_cmd, cmd);
+	if (spdk_unlikely(rc)) {
+		if (rc == -ENOMEM) {
+			nvmf_bdev_ctrl_queue_io(req, bdev, ch, nvmf_ctrlr_process_io_cmd_resubmit, req);
+			return SPDK_NVMF_REQUEST_EXEC_STATUS_ASYNCHRONOUS;
+		}
+		rsp->status.sc = SPDK_NVME_SC_INTERNAL_DEVICE_ERROR;
+		return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
+	}
 	return SPDK_NVMF_REQUEST_EXEC_STATUS_ASYNCHRONOUS;
 }
 

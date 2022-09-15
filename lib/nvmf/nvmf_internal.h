@@ -394,6 +394,10 @@ bool nvmf_ctrlr_write_zeroes_supported(struct spdk_nvmf_ctrlr *ctrlr);
 void nvmf_ctrlr_ns_changed(struct spdk_nvmf_ctrlr *ctrlr, uint32_t nsid);
 bool nvmf_ctrlr_use_zcopy(struct spdk_nvmf_request *req);
 
+bool nvmf_bdev_ctrlr_ns_is_zoned(struct spdk_nvmf_ns *ns);
+uint64_t nvmf_bdev_ctrlr_ns_get_zone_size(struct spdk_nvmf_ns *ns);
+uint32_t nvmf_bdev_ctrlr_ns_get_max_active_zones(struct spdk_nvmf_ns *ns);
+uint32_t nvmf_bdev_ctrlr_ns_get_max_open_zones(struct spdk_nvmf_ns *ns);
 void nvmf_bdev_ctrlr_identify_ns(struct spdk_nvmf_ns *ns, struct spdk_nvme_ns_data *nsdata,
 				 bool dif_insert_or_strip);
 int nvmf_bdev_ctrlr_read_cmd(struct spdk_bdev *bdev, struct spdk_bdev_desc *desc,
@@ -412,10 +416,15 @@ int nvmf_bdev_ctrlr_dsm_cmd(struct spdk_bdev *bdev, struct spdk_bdev_desc *desc,
 			    struct spdk_io_channel *ch, struct spdk_nvmf_request *req);
 int nvmf_bdev_ctrlr_nvme_passthru_io(struct spdk_bdev *bdev, struct spdk_bdev_desc *desc,
 				     struct spdk_io_channel *ch, struct spdk_nvmf_request *req);
+int nvmf_bdev_ctrlr_zone_append_cmd(struct spdk_bdev *bdev, struct spdk_bdev_desc *desc,
+			     struct spdk_io_channel *ch, struct spdk_nvmf_request *req);
+int nvmf_bdev_ctrlr_zone_info_cmd(struct spdk_bdev *bdev, struct spdk_bdev_desc *desc,
+			     struct spdk_io_channel *ch, struct spdk_nvmf_request *req);
+int nvmf_bdev_ctrlr_zone_mgmt_cmd(struct spdk_bdev *bdev, struct spdk_bdev_desc *desc,
+			     struct spdk_io_channel *ch, struct spdk_nvmf_request *req);
 bool nvmf_bdev_ctrlr_get_dif_ctx(struct spdk_bdev *bdev, struct spdk_nvme_cmd *cmd,
 				 struct spdk_dif_ctx *dif_ctx);
 bool nvmf_bdev_zcopy_enabled(struct spdk_bdev *bdev);
-
 int nvmf_subsystem_add_ctrlr(struct spdk_nvmf_subsystem *subsystem,
 			     struct spdk_nvmf_ctrlr *ctrlr);
 void nvmf_subsystem_remove_ctrlr(struct spdk_nvmf_subsystem *subsystem,

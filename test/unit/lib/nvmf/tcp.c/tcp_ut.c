@@ -123,6 +123,26 @@ DEFINE_STUB(nvmf_ctrlr_write_zeroes_supported,
 	    (struct spdk_nvmf_ctrlr *ctrlr),
 	    false);
 
+DEFINE_STUB(nvmf_bdev_ctrlr_ns_is_zoned,
+	    bool,
+	    (struct spdk_nvmf_ns *ns),
+	    false);
+
+DEFINE_STUB(nvmf_bdev_ctrlr_ns_get_zone_size,
+	    uint64_t,
+	    (struct spdk_nvmf_ns *ns),
+	    0);
+
+DEFINE_STUB(nvmf_bdev_ctrlr_ns_get_max_active_zones,
+	    uint32_t,
+	    (struct spdk_nvmf_ns *ns),
+            0);
+
+DEFINE_STUB(nvmf_bdev_ctrlr_ns_get_max_open_zones,
+	    uint32_t,
+	    (struct spdk_nvmf_ns *ns),
+            0);
+
 DEFINE_STUB(nvmf_bdev_ctrlr_read_cmd,
 	    int,
 	    (struct spdk_bdev *bdev, struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
@@ -175,6 +195,24 @@ DEFINE_STUB(spdk_nvmf_bdev_ctrlr_abort_cmd,
 	    int,
 	    (struct spdk_bdev *bdev, struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
 	     struct spdk_nvmf_request *req, struct spdk_nvmf_request *req_to_abort),
+	    0);
+
+DEFINE_STUB(nvmf_bdev_ctrlr_zone_mgmt_cmd,
+	    int,
+	    (struct spdk_bdev *bdev, struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
+	     struct spdk_nvmf_request *req),
+	    0);
+
+DEFINE_STUB(nvmf_bdev_ctrlr_zone_info_cmd,
+	    int,
+	    (struct spdk_bdev *bdev, struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
+	     struct spdk_nvmf_request *req),
+	    0);
+
+DEFINE_STUB(nvmf_bdev_ctrlr_zone_append_cmd,
+	    int,
+	    (struct spdk_bdev *bdev, struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
+	     struct spdk_nvmf_request *req),
 	    0);
 
 DEFINE_STUB(nvmf_bdev_ctrlr_get_dif_ctx,

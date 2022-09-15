@@ -122,6 +122,26 @@ DEFINE_STUB(nvmf_subsystem_find_listener,
 	     const struct spdk_nvme_transport_id *trid),
 	    (void *)0x1);
 
+DEFINE_STUB(nvmf_bdev_ctrlr_ns_is_zoned,
+            bool,
+            (struct spdk_nvmf_ns *ns),
+            false);
+
+DEFINE_STUB(nvmf_bdev_ctrlr_ns_get_zone_size,
+            uint64_t,
+            (struct spdk_nvmf_ns *ns),
+            0);
+
+DEFINE_STUB(nvmf_bdev_ctrlr_ns_get_max_active_zones,
+            uint32_t,
+            (struct spdk_nvmf_ns *ns),
+            0);
+
+DEFINE_STUB(nvmf_bdev_ctrlr_ns_get_max_open_zones,
+            uint32_t,
+            (struct spdk_nvmf_ns *ns),
+            0);
+
 DEFINE_STUB(nvmf_bdev_ctrlr_read_cmd,
 	    int,
 	    (struct spdk_bdev *bdev, struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
@@ -169,6 +189,24 @@ DEFINE_STUB(nvmf_bdev_ctrlr_nvme_passthru_io,
 	    (struct spdk_bdev *bdev, struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
 	     struct spdk_nvmf_request *req),
 	    0);
+
+DEFINE_STUB(nvmf_bdev_ctrlr_zone_mgmt_cmd,
+            int,
+            (struct spdk_bdev *bdev, struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
+             struct spdk_nvmf_request *req),
+            0);
+
+DEFINE_STUB(nvmf_bdev_ctrlr_zone_info_cmd,
+            int,
+            (struct spdk_bdev *bdev, struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
+             struct spdk_nvmf_request *req),
+            0);
+
+DEFINE_STUB(nvmf_bdev_ctrlr_zone_append_cmd,
+            int,
+            (struct spdk_bdev *bdev, struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
+             struct spdk_nvmf_request *req),
+            0);
 
 DEFINE_STUB(nvmf_transport_req_complete,
 	    int,
