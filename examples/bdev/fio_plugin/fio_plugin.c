@@ -119,6 +119,8 @@ static size_t spdk_fio_poll_thread(struct spdk_fio_thread *fio_thread);
 static int spdk_fio_handle_options(struct thread_data *td, struct fio_file *f,
 				   struct spdk_bdev *bdev);
 static int spdk_fio_handle_options_per_target(struct thread_data *td, struct fio_file *f);
+static int spdk_fio_reset_zones(struct spdk_fio_thread *fio_thread, struct spdk_fio_target *target,
+		     uint64_t offset, uint64_t length);
 
 static pthread_t g_init_thread_id = 0;
 static pthread_mutex_t g_init_mtx = PTHREAD_MUTEX_INITIALIZER;
@@ -629,6 +631,8 @@ spdk_fio_init(struct thread_data *td)
 
 	/* If thread has already been initialized, do nothing. */
 	if (td->io_ops_data) {
+		fio_thread = td->io_ops_data;
+		spdk_set_thread(fio_thread->thread);
 		return 0;
 	}
 
@@ -760,7 +764,8 @@ spdk_fio_queue(struct thread_data *td, struct io_u *io_u)
 	int rc = 1;
 	struct spdk_fio_request	*fio_req = io_u->engine_data;
 	struct spdk_fio_target *target = io_u->file->engine_data;
-	
+	int32_t block_size;
+
 	assert(fio_req->td == td);
 
 	if (!target) {
@@ -793,9 +798,16 @@ spdk_fio_queue(struct thread_data *td, struct io_u *io_u)
 		}
 		break;
 	case DDIR_TRIM:
-		rc = spdk_bdev_unmap(target->desc, target->ch,
-				     io_u->offset, io_u->xfer_buflen,
-				     spdk_fio_completion_cb, fio_req);
+		if (spdk_bdev_is_zoned(spdk_bdev_desc_get_bdev(target->desc))) {
+			block_size = spdk_bdev_get_block_size(target->bdev);
+			rc = spdk_bdev_zone_management(target->desc, target->ch, io_u->offset/block_size,
+				       SPDK_BDEV_ZONE_RESET,
+				       spdk_fio_completion_cb, fio_req);
+		} else {
+			rc = spdk_bdev_unmap(target->desc, target->ch,
+					     io_u->offset, io_u->xfer_buflen,
+					     spdk_fio_completion_cb, fio_req);
+		}
 		break;
 	case DDIR_SYNC:
 		rc = spdk_bdev_flush(target->desc, target->ch,
