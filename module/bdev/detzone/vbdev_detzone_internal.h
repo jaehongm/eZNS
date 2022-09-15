@@ -46,19 +46,15 @@ enum detzone_io_type {
 
 struct detzone_bdev_io {
 	int status;
+	enum detzone_io_type type;
 
-	uint64_t submit_tick;
-	uint64_t completion_tick;
-
+	uint64_t submit_tsc;
 	uint64_t next_offset_blocks;
 	uint64_t remain_blocks;
 	uint32_t outstanding_stripe_ios;
 
 	struct spdk_io_channel *ch;
 	struct spdk_bdev_io_wait_entry bdev_io_wait;
-	
-	enum detzone_io_type type;
-
 	struct iovec child_iovs[32];
 
 	TAILQ_ENTRY(detzone_bdev_io) link;
@@ -69,14 +65,20 @@ struct detzone_io_channel {
 	struct spdk_io_channel	*base_ch; /* IO channel of base device */
 
 	uint64_t	ch_lzslba;	/* current Logical ZSLBA (only one opened logical ZONE at a time) */
-	//struct detzone_cong	rd_cong;
-	//struct detzone_cong	wr_cong;
-	uint64_t	rd_avail_window;
-	uint64_t	wr_avail_window;
 
-	TAILQ_HEAD(, detzone_bdev_io)	rd_slidewin_queue;
-	TAILQ_HEAD(, detzone_bdev_io)	wr_slidewin_queue;
-	TAILQ_HEAD(, detzone_bdev_io)	write_drr_queue;
+	// statistic for the write I/O scheduler
+	uint64_t			write_blks;
+	uint64_t			total_write_blk_tsc;
+
+	uint64_t			next_credit_tsc;
+	struct spdk_poller		*credit_poller; /* credit generator */
+
+	uint32_t			wr_avail_credit_blks;
+	uint32_t			rd_outstanding_blks;
+	uint32_t			wr_outstanding_blks;
+
+	TAILQ_HEAD(, detzone_bdev_io)	rd_pending_queue;
+	TAILQ_HEAD(, detzone_bdev_io)	wr_pending_queue;
 };
 
 struct detzone_mgmt_channel {
@@ -89,7 +91,7 @@ enum vbdev_detzone_ns_state {
 	VBDEV_DETZONE_NS_STATE_PENDING
 };
 
-#define DETZONE_MAX_STRIPE_WIDTH 32
+#define DETZONE_MAX_STRIPE_WIDTH 128
 #define DETZONE_RESERVED_ZONES   1
 #define DETZONE_RESERVATION_BLKS 1
 #define DETZONE_INLINE_META_BLKS 1
@@ -121,6 +123,9 @@ struct vbdev_detzone_ns {
 	uint32_t	block_align;
 	uint64_t	zcap;		// Logical Zone Capacity
 	uint32_t	padding_blocks;	// num of blocks for padding at the beginning of base zone
+
+	uint32_t	read_credit_blks;
+	uint32_t	write_credit_blks;
 
 	/**
 	 * Fields that are used internally by the mgmt bdev.
@@ -171,11 +176,14 @@ struct vbdev_detzone {
 	struct spdk_bdev_desc	*base_desc; /* its descriptor we get from open */
 	struct spdk_bdev		mgmt_bdev;    /* the detzone mgmt bdev */
 	struct spdk_io_channel  *mgmt_ch;	/* the detzone mgmt channel */
-	
+	struct spdk_poller		*mgmt_poller;
+
 	uint32_t			num_pu;			  /* the number of parallel units (NAND dies) */
 	uint32_t			num_zone_reserved;	/* the number of reserved zone */
 	uint32_t			num_zone_empty;		/* the number of empty zone */
 	uint64_t 			zone_alloc_cnt;		  /* zone allocation counter */ 
+
+	uint32_t			per_zone_write_credits;
 
 	uint32_t			num_ns;				/* number of namespace */
 	uint64_t			claimed_blockcnt; /* claimed blocks by namespaces */
@@ -184,6 +192,14 @@ struct vbdev_detzone {
 
 	uint64_t			num_zones;
 	struct vbdev_detzone_zone_info 	*zone_info;
+
+	uint64_t			blk_latency_thresh_ticks;
+
+	struct __detzone_internal {
+		// statistic for the write I/O scheduler
+		uint64_t			active_channels;
+		uint64_t			total_write_blk_tsc;
+	} internal;
 
 	TAILQ_HEAD(, vbdev_detzone_ns)	ns;
 	TAILQ_HEAD(, vbdev_detzone_ns)	ns_active;
