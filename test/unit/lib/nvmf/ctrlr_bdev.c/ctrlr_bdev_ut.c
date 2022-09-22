@@ -229,6 +229,16 @@ DEFINE_STUB(spdk_bdev_zcopy_end, int,
 	     spdk_bdev_io_completion_cb cb, void *cb_arg),
 	    0);
 
+DEFINE_STUB(spdk_bdev_io_get_append_location, uint64_t,
+	    (struct spdk_bdev_io *bdev_io),
+	    0);
+
+DEFINE_STUB(spdk_bdev_zone_management, int,
+	    (struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
+	     uint64_t zone_id, enum spdk_bdev_zone_action action,
+	     spdk_bdev_io_completion_cb cb, void *cb_arg),
+	    0);
+
 struct spdk_nvmf_ns *
 spdk_nvmf_subsystem_get_ns(struct spdk_nvmf_subsystem *subsystem, uint32_t nsid)
 {

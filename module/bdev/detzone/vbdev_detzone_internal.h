@@ -38,10 +38,11 @@
 #include "spdk/bdev_module.h"
 
 enum detzone_io_type {
-	DETZONE_IO_NONE,
-	DETZONE_IO_READ,
-	DETZONE_IO_WRITE,
-	DETZONE_IO_MGMT
+	DETZONE_IO_NONE = 0,
+	DETZONE_IO_READ = 1,
+	DETZONE_IO_WRITE = 1 << 1,
+	DETZONE_IO_APPEND = 1 << 2,
+	DETZONE_IO_MGMT = 1 << 3
 };
 
 struct detzone_bdev_io {
@@ -53,6 +54,9 @@ struct detzone_bdev_io {
 	uint64_t remain_blocks;
 	uint32_t outstanding_stripe_ios;
 
+	int iov_idx;
+	uint64_t iov_offset;
+
 	struct spdk_io_channel *ch;
 	struct spdk_bdev_io_wait_entry bdev_io_wait;
 	struct iovec child_iovs[32];
@@ -63,8 +67,6 @@ struct detzone_bdev_io {
 struct detzone_io_channel {
 	uint32_t 	ch_id;
 	struct spdk_io_channel	*base_ch; /* IO channel of base device */
-
-	uint64_t	ch_lzslba;	/* current Logical ZSLBA (only one opened logical ZONE at a time) */
 
 	// statistic for the write I/O scheduler
 	uint64_t			write_blks;
@@ -113,9 +115,9 @@ struct vbdev_detzone_ns {
 	uint32_t	nsid;
 	bool		active;
 	uint32_t	ref;
+	uint64_t	num_active_zones;
 	uint64_t	num_open_zones;
 	uint64_t	base_zone_size;
-	uint64_t	num_base_zones;
 
 	// Namespace specific configuration parameters
 	uint32_t	zone_array_size; /* the number of base zones in logical zone */

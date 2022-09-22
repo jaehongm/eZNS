@@ -94,6 +94,7 @@ nvmf_bdev_ctrlr_complete_cmd(struct spdk_bdev_io *bdev_io, bool success,
 			     void *cb_arg)
 {
 	struct spdk_nvmf_request	*req = cb_arg;
+	struct spdk_nvme_cmd 		*cmd = &req->cmd->nvme_cmd;
 	struct spdk_nvme_cpl		*response = &req->rsp->nvme_cpl;
 	int				first_sc = 0, first_sct = 0, sc = 0, sct = 0;
 	uint32_t			cdw0 = 0;
@@ -115,7 +116,11 @@ nvmf_bdev_ctrlr_complete_cmd(struct spdk_bdev_io *bdev_io, bool success,
 		spdk_bdev_io_get_nvme_status(bdev_io, &cdw0, &sct, &sc);
 	}
 
-	response->cdw0 = cdw0;
+	if (cmd->opc == SPDK_NVME_OPC_ZONE_APPEND) {
+		*(uint64_t *)&response->cdw0 = spdk_bdev_io_get_append_location(bdev_io);
+	} else {
+		response->cdw0 = cdw0;
+	}
 	response->status.sc = sc;
 	response->status.sct = sct;
 
@@ -845,7 +850,7 @@ nvmf_bdev_ctrlr_zone_append_cmd(struct spdk_bdev *bdev, struct spdk_bdev_desc *d
 	nvmf_bdev_ctrlr_get_rw_params(cmd, &start_lba, &num_blocks);
 
 	rc = spdk_bdev_zone_appendv(desc, ch, req->iov, req->iovcnt,
-									start_lba, num_blocks, nvmf_bdev_ctrlr_complete_cmd, cmd);
+									start_lba, num_blocks, nvmf_bdev_ctrlr_complete_cmd, req);
 	if (spdk_unlikely(rc)) {
 		if (rc == -ENOMEM) {
 			nvmf_bdev_ctrl_queue_io(req, bdev, ch, nvmf_ctrlr_process_io_cmd_resubmit, req);
@@ -920,7 +925,7 @@ nvmf_bdev_ctrlr_zone_mgmt_cmd(struct spdk_bdev *bdev, struct spdk_bdev_desc *des
 	struct spdk_nvme_cmd *cmd = &req->cmd->nvme_cmd;
 	struct spdk_nvme_cpl *rsp = &req->rsp->nvme_cpl;
 	uint64_t zone_id;
-	uint8_t action;
+	uint8_t action, bdev_action;
 	bool sel_all;
 	int rc;
 
@@ -933,8 +938,30 @@ nvmf_bdev_ctrlr_zone_mgmt_cmd(struct spdk_bdev *bdev, struct spdk_bdev_desc *des
 		return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
 	}
 
+	switch(action) {
+	case SPDK_NVME_ZONE_CLOSE:
+		bdev_action = SPDK_BDEV_ZONE_CLOSE;
+		break;
+	case SPDK_NVME_ZONE_FINISH:
+		bdev_action = SPDK_BDEV_ZONE_FINISH;
+		break;
+	case SPDK_NVME_ZONE_OPEN:
+		bdev_action = SPDK_BDEV_ZONE_OPEN;
+		break;
+	case SPDK_NVME_ZONE_RESET:
+		bdev_action = SPDK_BDEV_ZONE_RESET;
+		break;
+	case SPDK_NVME_ZONE_OFFLINE:
+		bdev_action = SPDK_BDEV_ZONE_OFFLINE;
+		break;
+	case SPDK_NVME_ZONE_SET_ZDE:
+		bdev_action = SPDK_BDEV_ZONE_SET_ZDE;
+		break;
+	default:
+		assert(0);
+	}
 	rc = spdk_bdev_zone_management(desc, ch, zone_id,
-									 action, nvmf_bdev_ctrlr_complete_cmd, cmd);
+									 bdev_action, nvmf_bdev_ctrlr_complete_cmd, req);
 	if (spdk_unlikely(rc)) {
 		if (rc == -ENOMEM) {
 			nvmf_bdev_ctrl_queue_io(req, bdev, ch, nvmf_ctrlr_process_io_cmd_resubmit, req);
