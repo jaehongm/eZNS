@@ -167,8 +167,11 @@ nvmf_bdev_ctrlr_complete_zone_info_cmd(struct spdk_bdev_io *bdev_io, bool succes
 	struct spdk_nvmf_request *req = cb_arg;
 	struct spdk_nvme_cmd *cmd = &req->cmd->nvme_cmd;
 	struct spdk_nvme_zns_zone_report *report;
+	struct spdk_nvme_zns_zone_desc	 *descs;
 	struct spdk_bdev_zone_info *info;
 	uint64_t next_zone_id;
+	uint32_t iov_idx = 0, desc_idx = 0;
+	size_t iov_remain_len;
 	uint32_t num_zones, zone_handled = 0;
 	bool partial = from_le32(&cmd->cdw13) & 0x10000u;
 
@@ -180,26 +183,35 @@ nvmf_bdev_ctrlr_complete_zone_info_cmd(struct spdk_bdev_io *bdev_io, bool succes
 	next_zone_id = from_le64(&cmd->cdw10);
 	num_zones = (req->length - sizeof(*report)) / sizeof(struct spdk_nvme_zns_zone_desc);
 	report = req->data;
+	info = *(void**)report->descs;
+	assert(info);
 
-	if (num_zones) {
-		info = calloc(num_zones, sizeof(*info));
-		memcpy(info, report->descs, num_zones * sizeof(*info));
-		memset(report->descs, 0x0, req->length - sizeof(*report));
-
-		for ( ; zone_handled < num_zones; zone_handled++) {
-			// (temporary) find the end of list
-			if (info[zone_handled].zone_id < next_zone_id || 
-					info[zone_handled].capacity == 0) {
-				break;
-			}
-			_fill_report_from_zone(&report->descs[zone_handled], &info[zone_handled]);
-			next_zone_id = info[zone_handled].zone_id + info[zone_handled].capacity;
-		}
+	iov_remain_len = req->iov[iov_idx].iov_len - sizeof(*report);
+	descs = report->descs;
+	// Find the end of list. This is temporal solution due to the lack of
+	// num_zones info for spdk_bdev_get_zone_info().
+	for ( ; zone_handled < num_zones; zone_handled++) {
+		if (info[zone_handled].zone_id < next_zone_id || 
+				info[zone_handled].capacity == 0) {
+			break;
+		 } else if (iov_remain_len < sizeof(struct spdk_nvme_zns_zone_desc)) {
+			iov_idx++;
+			desc_idx = 0;
+			assert(iov_idx < req->iovcnt);
+			descs = req->iov[iov_idx].iov_base;
+			iov_remain_len = req->iov[iov_idx].iov_len;
+		 }
+		_fill_report_from_zone(&descs[desc_idx], &info[zone_handled]);
+		next_zone_id = info[zone_handled].zone_id + info[zone_handled].capacity;
+		iov_remain_len -= sizeof(struct spdk_nvme_zns_zone_desc);
+		desc_idx++;
 	}
 
 	if (partial) {
 		report->nr_zones = zone_handled;
 	}
+
+	free(info);
 	nvmf_bdev_ctrlr_complete_cmd(bdev_io, success, req);
 }
 
@@ -871,6 +883,7 @@ nvmf_bdev_ctrlr_zone_info_cmd(struct spdk_bdev *bdev, struct spdk_bdev_desc *des
 	struct spdk_nvme_cmd *cmd = &req->cmd->nvme_cmd;
 	struct spdk_nvme_cpl *rsp = &req->rsp->nvme_cpl;
 	struct spdk_nvme_zns_zone_report *report;
+	struct spdk_bdev_zone_info *info;
 	uint64_t zone_id = from_le64(&cmd->cdw10);
 	uint32_t num_dwords = from_le32(&cmd->cdw12);
 	uint8_t zra = from_le32(&cmd->cdw13) & 0xffu;
@@ -896,7 +909,6 @@ nvmf_bdev_ctrlr_zone_info_cmd(struct spdk_bdev *bdev, struct spdk_bdev_desc *des
 	report = req->data;
 	report->nr_zones = spdk_bdev_get_num_zones(bdev);
 	num_zones = (req->length - sizeof(*report)) / sizeof(struct spdk_nvme_zns_zone_desc);
-
 	if (num_zones == 0) {
 		if (partial) {
 			report->nr_zones = 0;
@@ -905,8 +917,11 @@ nvmf_bdev_ctrlr_zone_info_cmd(struct spdk_bdev *bdev, struct spdk_bdev_desc *des
 		return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
 	}
 
+	info = calloc(num_zones, sizeof(*info));
+	*(void**)report->descs = info;
+
 	rc = spdk_bdev_get_zone_info(desc, ch, zone_id,
-									 num_zones, (void*)report->descs, nvmf_bdev_ctrlr_complete_zone_info_cmd, req);
+									 num_zones, (void*)info, nvmf_bdev_ctrlr_complete_zone_info_cmd, req);
 	if (spdk_unlikely(rc)) {
 		if (rc == -ENOMEM) {
 			nvmf_bdev_ctrl_queue_io(req, bdev, ch, nvmf_ctrlr_process_io_cmd_resubmit, req);
