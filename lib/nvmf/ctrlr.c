@@ -2826,8 +2826,8 @@ nvmf_ctrlr_identify_ns_iocs(struct spdk_nvmf_subsystem *subsystem,
 			rsp->status.sct = SPDK_NVME_SCT_GENERIC;
 			rsp->status.sc = SPDK_NVME_SC_INVALID_FIELD;
 		} else {
-			cdata_zns->mar = nvmf_bdev_ctrlr_ns_get_max_active_zones(ns);
-			cdata_zns->mor = nvmf_bdev_ctrlr_ns_get_max_open_zones(ns);
+			cdata_zns->mar = nvmf_bdev_ctrlr_ns_get_max_active_zones(ns) - 1;
+			cdata_zns->mor = nvmf_bdev_ctrlr_ns_get_max_open_zones(ns) - 1;
 			cdata_zns->lbafe[0].zsze = nvmf_bdev_ctrlr_ns_get_zone_size(ns);
 			cdata_zns->lbafe[0].zdes = 0;
 		}
