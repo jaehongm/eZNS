@@ -61,6 +61,15 @@ struct detzone_bdev_io {
 	struct spdk_bdev_io_wait_entry bdev_io_wait;
 	struct iovec child_iovs[32];
 
+	struct {
+		/** NVMe completion queue entry DW0 */
+		uint32_t cdw0;
+		/** NVMe status code type */
+		int sct;
+		/** NVMe status code */
+		int sc;
+	} nvme_status;
+
 	TAILQ_ENTRY(detzone_bdev_io) link;
 };
 
