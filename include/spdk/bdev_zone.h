@@ -207,6 +207,10 @@ int spdk_bdev_zone_management(struct spdk_bdev_desc *desc, struct spdk_io_channe
 			      uint64_t zone_id, enum spdk_bdev_zone_action action,
 			      spdk_bdev_io_completion_cb cb, void *cb_arg);
 
+int spdk_bdev_zone_management_ext(struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
+			      uint64_t zone_id, enum spdk_bdev_zone_action action, bool sel_all,
+			      spdk_bdev_io_completion_cb cb, void *cb_arg);
+
 int spdk_bdev_set_zone_ext_info(struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
 			  	  uint64_t zone_id, void *ext_buf, spdk_bdev_io_completion_cb cb, void *cb_arg);
 

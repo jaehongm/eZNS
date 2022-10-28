@@ -132,6 +132,7 @@ static void
 _fill_report_from_zone(struct spdk_nvme_zns_zone_desc *desc, struct spdk_bdev_zone_info *info)
 {
 	desc->zt = SPDK_NVME_ZONE_TYPE_SEQWR;
+	desc->za.raw = 0;
 	desc->zcap = info->capacity;
 	desc->zslba = info->zone_id;
 	desc->wp = info->write_pointer;
@@ -947,11 +948,6 @@ nvmf_bdev_ctrlr_zone_mgmt_cmd(struct spdk_bdev *bdev, struct spdk_bdev_desc *des
 	zone_id = from_le64(&cmd->cdw10);
 	action = from_le32(&cmd->cdw13) & 0xffu;
 	sel_all = from_le32(&cmd->cdw13) & 0x100u ? true : false;
-	if (sel_all) {
-		SPDK_INFOLOG(nvmf, "Select All is not available yet!\n");
-		rsp->status.sc = SPDK_NVME_SC_INTERNAL_DEVICE_ERROR;
-		return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
-	}
 
 	switch(action) {
 	case SPDK_NVME_ZONE_CLOSE:
@@ -975,8 +971,8 @@ nvmf_bdev_ctrlr_zone_mgmt_cmd(struct spdk_bdev *bdev, struct spdk_bdev_desc *des
 	default:
 		assert(0);
 	}
-	rc = spdk_bdev_zone_management(desc, ch, zone_id,
-									 bdev_action, nvmf_bdev_ctrlr_complete_cmd, req);
+	rc = spdk_bdev_zone_management_ext(desc, ch, zone_id, bdev_action, sel_all,
+									 nvmf_bdev_ctrlr_complete_cmd, req);
 	if (spdk_unlikely(rc)) {
 		if (rc == -ENOMEM) {
 			nvmf_bdev_ctrl_queue_io(req, bdev, ch, nvmf_ctrlr_process_io_cmd_resubmit, req);

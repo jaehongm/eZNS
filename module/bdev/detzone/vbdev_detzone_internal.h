@@ -113,6 +113,10 @@ struct vbdev_detzone_ns_zone_info {
 	uint64_t			capacity;
 	enum spdk_bdev_zone_state	state;
 
+	struct __detzone_ns_base_zone_info {
+		uint64_t						zone_id;
+		TAILQ_HEAD(, detzone_bdev_io)	write_queue;
+	} base_zone[DETZONE_MAX_STRIPE_WIDTH];
 	uint64_t			base_zone_id[DETZONE_MAX_STRIPE_WIDTH];
 };
 
@@ -124,8 +128,8 @@ struct vbdev_detzone_ns {
 	uint32_t	nsid;
 	bool		active;
 	uint32_t	ref;
-	uint64_t	num_active_zones;
-	uint64_t	num_open_zones;
+	uint32_t	num_active_zones;
+	uint32_t	num_open_zones;
 	uint64_t	base_zone_size;
 
 	// Namespace specific configuration parameters

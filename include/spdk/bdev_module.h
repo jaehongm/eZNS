@@ -675,6 +675,9 @@ struct spdk_bdev_io {
 			/* Used to change zoned device zone state */
 			enum spdk_bdev_zone_action zone_action;
 
+			/* Select all zones */
+			bool sel_all;
+
 			/* The data buffer */
 			void *buf;
 		} zone_mgmt;

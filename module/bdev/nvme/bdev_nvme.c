@@ -4844,7 +4844,7 @@ fill_zone_ext_from_report(struct spdk_bdev_zone_ext_info *info,
 	info->write_pointer = desc->wp;
 	info->capacity = desc->zcap;
 
-	memcpy(info->ext, desc + sizeof(desc[0]), ext_copy_len);
+	memcpy(info->ext, (uint8_t *)desc + sizeof(*desc), ext_copy_len);
 	return 0;
 }
 
@@ -4857,7 +4857,7 @@ bdev_nvme_get_zone_info_done(void *ref, const struct spdk_nvme_cpl *cpl)
 	uint32_t zones_to_copy = bdev_io->u.zone_mgmt.num_zones;
 	struct spdk_bdev_zone_info *info = bdev_io->u.zone_mgmt.buf;
 	struct spdk_bdev_zone_ext_info *ext_info = bdev_io->u.zone_mgmt.buf;
-	uint64_t max_zones_per_buf, i, zdes;
+	uint64_t max_zones_per_buf, i, zdes_bytes;
 	uint32_t zone_report_bufsize;
 	struct spdk_nvme_ns *ns;
 	struct spdk_nvme_qpair *qpair;
@@ -4880,14 +4880,14 @@ bdev_nvme_get_zone_info_done(void *ref, const struct spdk_nvme_cpl *cpl)
 
 	nsdata_zns = spdk_nvme_zns_ns_get_data(ns);
 	nsdata = spdk_nvme_ns_get_data(ns);
-	zdes = nsdata_zns->lbafe[nsdata->flbas.format].zdes * 64;
+	zdes_bytes = nsdata_zns->lbafe[nsdata->flbas.format].zdes * 64;
 	zone_report_bufsize = spdk_nvme_ns_get_max_io_xfer_size(ns);
 	// Workaround for a potential bug in SSD (counting partial desc as 1)
 	zone_report_bufsize -= (zone_report_bufsize - sizeof(struct spdk_nvme_zns_zone_report)) %
-								(sizeof(struct spdk_nvme_zns_zone_desc) + zdes);
+								(sizeof(struct spdk_nvme_zns_zone_desc) + zdes_bytes);
 	if (bdev_io->u.zone_mgmt.zone_action == SPDK_BDEV_ZONE_EXT_REPORT) {
 		max_zones_per_buf = (zone_report_bufsize - sizeof(*bio->zone_report_buf)) /
-					(sizeof(bio->zone_report_buf->descs[0]) + zdes);
+					(sizeof(bio->zone_report_buf->descs[0]) + zdes_bytes);
 	} else {
 		max_zones_per_buf = (zone_report_bufsize - sizeof(*bio->zone_report_buf)) /
 					sizeof(bio->zone_report_buf->descs[0]);
@@ -4907,8 +4907,8 @@ bdev_nvme_get_zone_info_done(void *ref, const struct spdk_nvme_cpl *cpl)
 		if (bdev_io->u.zone_mgmt.zone_action == SPDK_BDEV_ZONE_EXT_REPORT) {
 			ret = fill_zone_ext_from_report(&ext_info[bio->handled_zones], (struct spdk_nvme_zns_zone_desc *)(
 							(uint8_t *)&bio->zone_report_buf->descs[0] +
-							 (sizeof(bio->zone_report_buf->descs[0]) + zdes) * i),
-							spdk_min(SPDK_BDEV_ZONE_MAX_EXT_SIZE, zdes * 64));
+							 (sizeof(struct spdk_nvme_zns_zone_desc) + zdes_bytes) * i),
+							spdk_min(SPDK_BDEV_ZONE_MAX_EXT_SIZE, zdes_bytes));
 		} else {
 			ret = fill_zone_from_report(&info[bio->handled_zones],
 							&bio->zone_report_buf->descs[i]);
@@ -5494,7 +5494,7 @@ bdev_nvme_zone_management(struct nvme_bdev_io *bio, uint64_t zone_id,
 	struct spdk_bdev_io *bdev_io = spdk_bdev_io_from_ctx(bio);
 	const struct spdk_nvme_zns_ns_data *nsdata_zns = spdk_nvme_zns_ns_get_data(ns);
 	const struct spdk_nvme_ns_data *nsdata = spdk_nvme_ns_get_data(ns);
-	uint64_t zdes = nsdata_zns->lbafe[nsdata->flbas.format].zdes * 64;
+	uint64_t zdes_bytes = nsdata_zns->lbafe[nsdata->flbas.format].zdes * 64;
 
 	switch (action) {
 	case SPDK_BDEV_ZONE_CLOSE:
@@ -5515,7 +5515,7 @@ bdev_nvme_zone_management(struct nvme_bdev_io *bio, uint64_t zone_id,
 	case SPDK_BDEV_ZONE_SET_ZDE:
 		return spdk_nvme_zns_set_zone_desc_ext(ns, qpair, zone_id,
 						  bdev_io->u.zone_mgmt.buf,
-						  spdk_min(SPDK_BDEV_ZONE_MAX_EXT_SIZE, zdes),
+						  spdk_min(SPDK_BDEV_ZONE_MAX_EXT_SIZE, zdes_bytes),
 						  bdev_nvme_zone_management_done, bio);
 	default:
 		return -EINVAL;

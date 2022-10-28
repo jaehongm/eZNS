@@ -124,6 +124,9 @@ static const struct nvme_string io_opcode[] = {
 	{ SPDK_NVME_OPC_RESERVATION_REPORT, "RESERVATION REPORT" },
 	{ SPDK_NVME_OPC_RESERVATION_ACQUIRE, "RESERVATION ACQUIRE" },
 	{ SPDK_NVME_OPC_RESERVATION_RELEASE, "RESERVATION RELEASE" },
+	{ SPDK_NVME_OPC_ZONE_MGMT_SEND, "ZNS MANAGEMENT SEND" },
+	{ SPDK_NVME_OPC_ZONE_MGMT_RECV, "ZNS MANAGEMENT RECV" },
+	{ SPDK_NVME_OPC_ZONE_APPEND, "ZNS ZONE APPEND" },
 	{ SPDK_OCSSD_OPC_VECTOR_RESET, "OCSSD / VECTOR RESET" },
 	{ SPDK_OCSSD_OPC_VECTOR_WRITE, "OCSSD / VECTOR WRITE" },
 	{ SPDK_OCSSD_OPC_VECTOR_READ, "OCSSD / VECTOR READ" },
@@ -278,6 +281,14 @@ nvme_io_qpair_print_command(uint16_t qid, struct spdk_nvme_cmd *cmd)
 		SPDK_NOTICELOG("%s sqid:%d cid:%d nsid:%d\n",
 			       nvme_get_string(io_opcode, cmd->opc), qid, cmd->cid, cmd->nsid);
 		break;
+	case SPDK_NVME_OPC_ZONE_MGMT_SEND:
+	case SPDK_NVME_OPC_ZONE_MGMT_RECV:
+		SPDK_NOTICELOG("%s sqid:%d cid:%d nsid:%d "
+			       "slba:%llu \n",
+			       nvme_get_string(io_opcode, cmd->opc), qid, cmd->cid, cmd->nsid,
+			       ((unsigned long long)cmd->cdw11 << 32) + cmd->cdw10);
+		break;
+
 	default:
 		SPDK_NOTICELOG("%s (%02x) sqid:%d cid:%d nsid:%d\n",
 			       nvme_get_string(io_opcode, cmd->opc), cmd->opc, qid, cmd->cid, cmd->nsid);
