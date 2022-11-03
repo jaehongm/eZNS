@@ -45,21 +45,95 @@ enum detzone_io_type {
 	DETZONE_IO_MGMT = 1 << 3
 };
 
+typedef void (*detzone_ns_mgmt_completion_cb)(struct spdk_bdev_io *bdev_io,
+		int sct, int sc,
+		void *cb_arg);
+
+struct vbdev_detzone_ns_mgmt_io_ctx {
+	int status;
+
+	uint32_t remain_ios;
+	uint32_t outstanding_mgmt_ios;
+
+	struct {
+		/* First logical block of a zone */
+		uint64_t zone_id;
+
+		/* Number of zones */
+		uint32_t num_zones;
+
+		/* Used to change zoned device zone state */
+		enum spdk_bdev_zone_action zone_action;
+
+		/* Select All flag */
+		bool select_all;
+
+		/* The data buffer */
+		void *buf;
+	} zone_mgmt;
+
+	struct {
+		/** NVMe completion queue entry DW0 */
+		uint32_t cdw0;
+		/** NVMe status code type */
+		int sct;
+		/** NVMe status code */
+		int sc;
+	} nvme_status;
+
+	struct spdk_bdev_io 		*parent_io;
+	struct spdk_thread			*submited_thread;
+	struct vbdev_detzone_ns 	*detzone_ns;
+
+	detzone_ns_mgmt_completion_cb cb;
+	void *cb_arg;
+};
+
 struct detzone_bdev_io {
 	int status;
+	bool is_busy;
 	enum detzone_io_type type;
 
-	uint64_t submit_tsc;
-	uint64_t next_offset_blocks;
-	uint64_t remain_blocks;
-	uint32_t outstanding_stripe_ios;
+	union {
+		struct {
+			int iov_idx;
+			uint64_t iov_offset;
+			uint64_t next_offset_blocks;
+			uint64_t remain_blocks;
+			uint64_t outstanding_stripe_ios;
+		} io;
 
-	int iov_idx;
-	uint64_t iov_offset;
+		struct {
+			uint32_t remain_ios;
+			uint32_t outstanding_mgmt_ios;
+
+			struct {
+				/* First logical block of a zone */
+				uint64_t zone_id;
+
+				/* Number of zones */
+				uint32_t num_zones;
+
+				/* Used to change zoned device zone state */
+				enum spdk_bdev_zone_action zone_action;
+
+				/* Select All flag */
+				bool select_all;
+
+				/* The data buffer */
+				void *buf;
+			} zone_mgmt;
+
+			struct spdk_bdev_io 		*parent_io;
+			struct vbdev_detzone_ns 	*detzone_ns;
+
+			detzone_ns_mgmt_completion_cb cb;
+			void *cb_arg;
+		} mgmt;
+	} u;
 
 	struct spdk_io_channel *ch;
 	struct spdk_bdev_io_wait_entry bdev_io_wait;
-	struct iovec child_iovs[32];
 
 	struct {
 		/** NVMe completion queue entry DW0 */
@@ -81,15 +155,7 @@ struct detzone_io_channel {
 	uint64_t			write_blks;
 	uint64_t			total_write_blk_tsc;
 
-	uint64_t			next_credit_tsc;
-	struct spdk_poller		*credit_poller; /* credit generator */
-
-	uint32_t			wr_avail_credit_blks;
-	uint32_t			rd_outstanding_blks;
-	uint32_t			wr_outstanding_blks;
-
-	TAILQ_HEAD(, detzone_bdev_io)	rd_pending_queue;
-	TAILQ_HEAD(, detzone_bdev_io)	wr_pending_queue;
+	struct spdk_poller	*write_sched_poller; /* credit generator */
 };
 
 struct detzone_mgmt_channel {
@@ -106,8 +172,9 @@ enum vbdev_detzone_ns_state {
 #define DETZONE_RESERVED_ZONES   1
 #define DETZONE_RESERVATION_BLKS 1
 #define DETZONE_INLINE_META_BLKS 1
+#define DETZONE_WRITEV_MAX_IOVS 32
 
-struct vbdev_detzone_ns_zone_info {
+struct vbdev_detzone_ns_zone {
 	uint64_t			zone_id;
 	uint64_t			write_pointer;
 	uint64_t			capacity;
@@ -115,15 +182,29 @@ struct vbdev_detzone_ns_zone_info {
 
 	struct __detzone_ns_base_zone_info {
 		uint64_t						zone_id;
-		TAILQ_HEAD(, detzone_bdev_io)	write_queue;
+		// vectored I/O
+		struct iovec			iovs[DETZONE_WRITEV_MAX_IOVS];
+		uint32_t				iov_cnt;
+		uint64_t				iov_blks;
 	} base_zone[DETZONE_MAX_STRIPE_WIDTH];
-	uint64_t			base_zone_id[DETZONE_MAX_STRIPE_WIDTH];
+
+	uint32_t					wr_zone_in_progress;
+	uint64_t					wr_outstanding_ios;
+	uint64_t					tb_tokens;
+	uint64_t					tb_last_update_tsc;
+
+	TAILQ_HEAD(, detzone_bdev_io)	wr_pending_queue;
+	TAILQ_HEAD(, detzone_bdev_io)	wr_waiting_cpl;
+
+	TAILQ_ENTRY(vbdev_detzone_ns_zone)	link;
 };
 
 struct vbdev_detzone_ns {
 	void					*ctrl;
 	struct spdk_bdev		detzone_ns_bdev;    /* the detzone ns virtual bdev */
-	struct spdk_thread 		*thread;  /* thread where the namespace is opened */
+
+	struct spdk_thread 		*wr_thread;  /* thread where the namespace process write IOs */
+	struct spdk_io_channel 	*wr_ch;
 	
 	uint32_t	nsid;
 	bool		active;
@@ -133,14 +214,12 @@ struct vbdev_detzone_ns {
 	uint64_t	base_zone_size;
 
 	// Namespace specific configuration parameters
-	uint32_t	zone_array_size; /* the number of base zones in logical zone */
-	uint32_t	stripe_blocks; /* stripe size (in blocks) */
+	uint32_t	zone_stripe_width; /* the number of base zones in logical zone */
+	uint32_t	zone_stripe_blks; /* stripe size (in blocks) */
+	uint32_t	zone_stripe_tb_size;
 	uint32_t	block_align;
 	uint64_t	zcap;		// Logical Zone Capacity
 	uint32_t	padding_blocks;	// num of blocks for padding at the beginning of base zone
-
-	uint32_t	read_credit_blks;
-	uint32_t	write_credit_blks;
 
 	/**
 	 * Fields that are used internally by the mgmt bdev.
@@ -148,9 +227,11 @@ struct vbdev_detzone_ns {
 	 */
 	struct __detzone_ns_internal {
 		enum vbdev_detzone_ns_state ns_state;
-		struct vbdev_detzone_ns_zone_info *zone_info;
+		struct vbdev_detzone_ns_zone *zone;
 		struct spdk_bit_array *epoch_pu_map;	// PU allocation bitmap for the current epoch
 		uint32_t			   epoch_num_pu;	// PU allocation count for the current epoch
+
+		TAILQ_HEAD(, vbdev_detzone_ns_zone)	zone_write_queue;
 	} internal;
 
 	TAILQ_ENTRY(vbdev_detzone_ns)	link;
@@ -198,7 +279,7 @@ struct vbdev_detzone {
 	uint32_t			num_zone_empty;		/* the number of empty zone */
 	uint64_t 			zone_alloc_cnt;		  /* zone allocation counter */ 
 
-	uint32_t			per_zone_write_credits;
+	uint32_t			per_zone_mdts;
 
 	uint32_t			num_ns;				/* number of namespace */
 	uint64_t			claimed_blockcnt; /* claimed blocks by namespaces */
@@ -244,49 +325,6 @@ struct vbdev_detzone_md_io_ctx {
 	void *buf;
 
 	detzone_md_io_completion_cb cb;
-	void *cb_arg;
-};
-
-typedef void (*detzone_ns_mgmt_completion_cb)(struct spdk_bdev_io *bdev_io,
-		int sct, int sc,
-		void *cb_arg);
-
-struct vbdev_detzone_ns_mgmt_io_ctx {
-	int status;
-
-	uint32_t remain_ios;
-	uint32_t outstanding_mgmt_ios;
-
-	struct {
-		/* First logical block of a zone */
-		uint64_t zone_id;
-
-		/* Number of zones */
-		uint32_t num_zones;
-
-		/* Used to change zoned device zone state */
-		enum spdk_bdev_zone_action zone_action;
-
-		/* Select All flag */
-		bool select_all;
-
-		/* The data buffer */
-		void *buf;
-	} zone_mgmt;
-
-	struct {
-		/** NVMe completion queue entry DW0 */
-		uint32_t cdw0;
-		/** NVMe status code type */
-		int sct;
-		/** NVMe status code */
-		int sc;
-	} nvme_status;
-
-	struct spdk_bdev_io 		*parent_io;
-	struct vbdev_detzone_ns 	*detzone_ns;
-
-	detzone_ns_mgmt_completion_cb cb;
 	void *cb_arg;
 };
 

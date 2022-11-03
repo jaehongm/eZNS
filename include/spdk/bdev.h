@@ -1720,6 +1720,17 @@ void spdk_bdev_get_device_stat(struct spdk_bdev *bdev, struct spdk_bdev_io_stat 
 			       spdk_bdev_get_device_stat_cb cb, void *cb_arg);
 
 /**
+ * Return I/O statistics for this bdev. All the required information will be passed
+ * via the callback function.
+ *
+ * \param bdev_io I/O to get the status from.
+ * \param submit_tsc Submission timestamp counter
+ */
+void spdk_bdev_io_get_submit_tsc(const struct spdk_bdev_io *bdev_io,
+				   uint64_t *submit_tsc);
+
+
+/**
  * Get the status of bdev_io as an NVMe status code and command specific
  * completion queue value.
  *
