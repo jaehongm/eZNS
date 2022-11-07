@@ -188,13 +188,14 @@ struct vbdev_detzone_ns_zone {
 		uint64_t				iov_blks;
 	} base_zone[DETZONE_MAX_STRIPE_WIDTH];
 
+	bool						doing_imp_open;
 	uint32_t					wr_zone_in_progress;
 	uint64_t					wr_outstanding_ios;
 	uint64_t					tb_tokens;
 	uint64_t					tb_last_update_tsc;
 
-	TAILQ_HEAD(, detzone_bdev_io)	wr_pending_queue;
-	TAILQ_HEAD(, detzone_bdev_io)	wr_waiting_cpl;
+	TAILQ_HEAD(, detzone_bdev_io)	wr_pending;
+	TAILQ_HEAD(, detzone_bdev_io)	wr_wait_for_cpl;
 
 	TAILQ_ENTRY(vbdev_detzone_ns_zone)	link;
 };
