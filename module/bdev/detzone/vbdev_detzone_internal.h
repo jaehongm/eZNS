@@ -36,6 +36,11 @@
 
 #include "spdk/bdev.h"
 #include "spdk/bdev_module.h"
+#include "spdk/assert.h"
+
+#define DETZONE_NS_META_FORMAT_VER	1
+#define DETZONE_NS_MAX_ACTIVE_ZONE 	16
+#define DETZONE_NS_MAX_OPEN_ZONE 	16
 
 enum detzone_io_type {
 	DETZONE_IO_NONE = 0,
@@ -82,7 +87,7 @@ struct vbdev_detzone_ns_mgmt_io_ctx {
 	} nvme_status;
 
 	struct spdk_bdev_io 		*parent_io;
-	struct spdk_thread			*submited_thread;
+	struct spdk_thread			*submitted_thread;
 	struct vbdev_detzone_ns 	*detzone_ns;
 
 	detzone_ns_mgmt_completion_cb cb;
@@ -97,10 +102,12 @@ struct detzone_bdev_io {
 	union {
 		struct {
 			int iov_idx;
+			uint32_t outstanding_stripe_ios;
+
 			uint64_t iov_offset;
 			uint64_t next_offset_blocks;
 			uint64_t remain_blocks;
-			uint64_t outstanding_stripe_ios;
+			uint64_t boundary_blks;
 		} io;
 
 		struct {
@@ -168,25 +175,37 @@ enum vbdev_detzone_ns_state {
 	VBDEV_DETZONE_NS_STATE_PENDING
 };
 
-#define DETZONE_MAX_STRIPE_WIDTH 128
+#define DETZONE_MAX_STRIPE_WIDTH 32
+#define DETZONE_LOGI_ZONE_STRIDE 32
 #define DETZONE_RESERVED_ZONES   1
 #define DETZONE_RESERVATION_BLKS 1
 #define DETZONE_INLINE_META_BLKS 1
 #define DETZONE_WRITEV_MAX_IOVS 32
 
+struct vbdev_detzone_ns_stripe_group {
+	uint64_t				slba;
+	uint32_t				width;
+	uint32_t				base_start_idx;
+	//uint32_t				base_zone_idx[DETZONE_MAX_STRIPE_WIDTH];
+};
+
 struct vbdev_detzone_ns_zone {
 	uint64_t			zone_id;
 	uint64_t			write_pointer;
+	uint64_t			write_pending_blks;
 	uint64_t			capacity;
 	enum spdk_bdev_zone_state	state;
 
 	struct __detzone_ns_base_zone_info {
-		uint64_t						zone_id;
+		uint64_t				zone_id;
 		// vectored I/O
 		struct iovec			iovs[DETZONE_WRITEV_MAX_IOVS];
 		uint32_t				iov_cnt;
 		uint64_t				iov_blks;
 	} base_zone[DETZONE_MAX_STRIPE_WIDTH];
+
+	uint32_t					num_zone_alloc;
+	struct vbdev_detzone_ns_stripe_group stripe_group[DETZONE_MAX_STRIPE_WIDTH];
 
 	bool						doing_imp_open;
 	uint32_t					wr_zone_in_progress;
@@ -212,10 +231,10 @@ struct vbdev_detzone_ns {
 	uint32_t	ref;
 	uint32_t	num_active_zones;
 	uint32_t	num_open_zones;
-	uint64_t	base_zone_size;
+	uint64_t	base_zsze;
+	uint64_t	base_avail_zcap;
 
 	// Namespace specific configuration parameters
-	uint32_t	zone_stripe_width; /* the number of base zones in logical zone */
 	uint32_t	zone_stripe_blks; /* stripe size (in blocks) */
 	uint32_t	zone_stripe_tb_size;
 	uint32_t	block_align;
@@ -239,16 +258,17 @@ struct vbdev_detzone_ns {
 	TAILQ_ENTRY(vbdev_detzone_ns)	state_link;
 };
 
-struct vbdev_detzone_zone_md {
+struct __attribute__((packed)) vbdev_detzone_zone_md {
+	uint8_t				version;
+
 	uint32_t			ns_id;
 	uint64_t			lzone_id;
-	uint32_t			stripe_id;
-
-	uint32_t			stripe_width;
+	uint8_t				stripe_id;
 	uint32_t			stripe_size;
 
-	char reserved[40];
+	struct vbdev_detzone_ns_stripe_group stripe_group;
 };
+SPDK_STATIC_ASSERT(sizeof(struct vbdev_detzone_zone_md) <= 512, "Incorrect size");
 
 struct vbdev_detzone_zone_info {
 	uint64_t			zone_id;
@@ -259,9 +279,9 @@ struct vbdev_detzone_zone_info {
 	uint32_t			ns_id;
 	uint64_t			lzone_id;
 	uint32_t			stripe_id;
-
-	uint32_t			stripe_width;
 	uint32_t			stripe_size;
+
+	struct vbdev_detzone_ns_stripe_group stripe_group;
 
 	uint32_t			pu_group;
 	TAILQ_ENTRY(vbdev_detzone_zone_info) link;
@@ -278,6 +298,7 @@ struct vbdev_detzone {
 	uint32_t			num_pu;			  /* the number of parallel units (NAND dies) */
 	uint32_t			num_zone_reserved;	/* the number of reserved zone */
 	uint32_t			num_zone_empty;		/* the number of empty zone */
+	uint32_t			num_zone_opened;		/* the number of opened zone */
 	uint64_t 			zone_alloc_cnt;		  /* zone allocation counter */ 
 
 	uint32_t			per_zone_mdts;

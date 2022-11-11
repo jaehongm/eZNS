@@ -156,7 +156,6 @@ SPDK_RPC_REGISTER("bdev_detzone_delete", rpc_bdev_detzone_delete, SPDK_RPC_RUNTI
 struct rpc_construct_detzone_ns {
 	char *ns_name;
 	char *ctrl_name;
-	uint32_t zone_stripe_width;
 	uint32_t stripe_size;
 	uint32_t block_align;
 	uint64_t num_base_zones;
@@ -172,7 +171,6 @@ free_rpc_construct_detzone_ns(struct rpc_construct_detzone_ns *r)
 static const struct spdk_json_object_decoder rpc_construct_detzone_ns_decoders[] = {
 	{"ns_name", offsetof(struct rpc_construct_detzone_ns, ns_name), spdk_json_decode_string},
 	{"ctrl_name", offsetof(struct rpc_construct_detzone_ns, ctrl_name), spdk_json_decode_string},
-	{"zone_stripe_width", offsetof(struct rpc_construct_detzone_ns, zone_stripe_width), spdk_json_decode_uint32, true},
 	{"stripe_size", offsetof(struct rpc_construct_detzone_ns, stripe_size), spdk_json_decode_uint32, true},
 	{"block_align", offsetof(struct rpc_construct_detzone_ns, block_align), spdk_json_decode_uint32, true},
 	{"num_base_zones", offsetof(struct rpc_construct_detzone_ns, num_base_zones), spdk_json_decode_uint64, false},
@@ -196,7 +194,7 @@ rpc_bdev_detzone_ns_create(struct spdk_jsonrpc_request *request,
 	}
 
 	rc = spdk_bdev_create_detzone_ns(req.ctrl_name, req.ns_name,
-							 req.zone_stripe_width, req.stripe_size, req.block_align,
+							 req.stripe_size, req.block_align,
 							 req.num_base_zones);
 	if (rc != 0) {
 		spdk_jsonrpc_send_error_response(request, rc, spdk_strerror(-rc));

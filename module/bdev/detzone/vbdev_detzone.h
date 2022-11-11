@@ -49,7 +49,7 @@ typedef void (*vbdev_detzone_register_cb)(void *arg, int rc);
  * \return 0 on success, other on failure.
  */
 int spdk_bdev_create_detzone_ns(const char *detzone_name, const char *ns_name,
-					uint32_t zone_stripe_width, uint32_t stripe_size, uint32_t block_align,
+					uint32_t stripe_size, uint32_t block_align,
 					uint64_t num_base_zones);
 
 /**
