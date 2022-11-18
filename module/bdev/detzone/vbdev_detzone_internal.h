@@ -92,6 +92,8 @@ struct vbdev_detzone_ns_mgmt_io_ctx {
 
 	detzone_ns_mgmt_completion_cb cb;
 	void *cb_arg;
+
+	TAILQ_ENTRY(vbdev_detzone_ns_mgmt_io_ctx) link;
 };
 
 struct detzone_bdev_io {
@@ -213,6 +215,8 @@ struct vbdev_detzone_ns_zone {
 	uint64_t					tb_tokens;
 	uint64_t					tb_last_update_tsc;
 
+	uint64_t					last_write_pointer;  // measuring statistic purpose
+
 	TAILQ_HEAD(, detzone_bdev_io)	wr_pending;
 	TAILQ_HEAD(, detzone_bdev_io)	wr_wait_for_cpl;
 
@@ -255,7 +259,7 @@ struct vbdev_detzone_ns {
 	} internal;
 
 	TAILQ_ENTRY(vbdev_detzone_ns)	link;
-	TAILQ_ENTRY(vbdev_detzone_ns)	state_link;
+	TAILQ_ENTRY(vbdev_detzone_ns_mgmt_io_ctx)	state_link;
 };
 
 struct __attribute__((packed)) vbdev_detzone_zone_md {
@@ -317,6 +321,8 @@ struct vbdev_detzone {
 		// statistic for the write I/O scheduler
 		uint64_t			active_channels;
 		uint64_t			total_write_blk_tsc;
+
+		TAILQ_HEAD(, vbdev_detzone_ns_mgmt_io_ctx) zone_alloc_queued;
 	} internal;
 
 	TAILQ_HEAD(, vbdev_detzone_ns)	ns;

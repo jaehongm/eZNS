@@ -101,6 +101,7 @@ struct vbdev_detzone_register_ctx {
 static void vbdev_detzone_ns_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io);
 static void vbdev_detzone_reserve_zone(void *arg);
 static void vbdev_detzone_ns_dealloc_zone(struct vbdev_detzone_ns *detzone_ns, uint64_t zone_idx);
+static void vbdev_detzone_ns_alloc_zone(void *arg);
 static void _vbdev_detzone_md_read_submit(struct vbdev_detzone_md_io_ctx *md_io_ctx);
 static void _detzone_ns_write_prepare(struct vbdev_detzone_ns_zone *zone);
 
@@ -407,62 +408,62 @@ _detzone_zone_management_done(struct spdk_bdev_io *bdev_io, bool success, void *
 				switch (mgmt_io_ctx->zone_mgmt.zone_action) {
 				case SPDK_BDEV_ZONE_CLOSE:
 					if (_detzone_is_open_state(detzone_ns->internal.zone[zone_idx].state)) {
-						SPDK_DEBUGLOG(vbdev_detzone, "CLOSE: release open(%u)\n", detzone_ns->num_open_zones);
 						detzone_ns->num_open_zones--;
-					}
-					if (!_detzone_is_active_state(detzone_ns->internal.zone[zone_idx].state)) {
-						SPDK_DEBUGLOG(vbdev_detzone, "CLOSE: release active(%u)\n", detzone_ns->num_active_zones);
-						detzone_ns->num_active_zones++;
+						SPDK_DEBUGLOG(vbdev_detzone, "CLOSE: release open(%u)\n", detzone_ns->num_open_zones);
 					}
 					detzone_ns->internal.zone[zone_idx + i].state = SPDK_BDEV_ZONE_STATE_CLOSED;
 					break;
 				case SPDK_BDEV_ZONE_FINISH:
 					if (_detzone_is_open_state(detzone_ns->internal.zone[zone_idx].state)) {
-						SPDK_DEBUGLOG(vbdev_detzone, "FINISH: release open(%u)\n", detzone_ns->num_open_zones);
 						detzone_ns->num_open_zones--;
+						SPDK_DEBUGLOG(vbdev_detzone, "FINISH: release open(%u)\n", detzone_ns->num_open_zones);
 					}
 					if (_detzone_is_active_state(detzone_ns->internal.zone[zone_idx].state)) {
-						SPDK_DEBUGLOG(vbdev_detzone, "FINISH: release active(%u)\n", detzone_ns->num_active_zones);
 						detzone_ns->num_active_zones--;
+						SPDK_DEBUGLOG(vbdev_detzone, "FINISH: release active(%u)\n", detzone_ns->num_active_zones);
 					}
 					detzone_ns->internal.zone[zone_idx + i].state = SPDK_BDEV_ZONE_STATE_FULL;
 					break;
 				case SPDK_BDEV_ZONE_OPEN:
 					if (!_detzone_is_open_state(detzone_ns->internal.zone[zone_idx].state)) {
-						SPDK_DEBUGLOG(vbdev_detzone, "OPEN: acquire open(%u)\n", detzone_ns->num_open_zones);
 						detzone_ns->num_open_zones++;
+						SPDK_DEBUGLOG(vbdev_detzone, "OPEN: acquire open(%u)\n", detzone_ns->num_open_zones);
 					}
 					if (!_detzone_is_active_state(detzone_ns->internal.zone[zone_idx].state)) {
-						SPDK_DEBUGLOG(vbdev_detzone, "OPEN: acquire active(%u)\n", detzone_ns->num_active_zones);
 						detzone_ns->num_active_zones++;
+						SPDK_DEBUGLOG(vbdev_detzone, "OPEN: acquire active(%u)\n", detzone_ns->num_active_zones);
 					}
 					detzone_ns->internal.zone[zone_idx + i].state = SPDK_BDEV_ZONE_STATE_EXP_OPEN;
 					break;
 				case SPDK_BDEV_ZONE_RESET:
 					if (_detzone_is_open_state(detzone_ns->internal.zone[zone_idx].state)) {
-						SPDK_DEBUGLOG(vbdev_detzone, "RESET: release open(%u)\n", detzone_ns->num_open_zones);
 						detzone_ns->num_open_zones--;
+						SPDK_DEBUGLOG(vbdev_detzone, "RESET: release open(%u)\n", detzone_ns->num_open_zones);
 					}
 					if (_detzone_is_active_state(detzone_ns->internal.zone[zone_idx].state)) {
-						SPDK_DEBUGLOG(vbdev_detzone, "RESET: release active(%u)\n", detzone_ns->num_active_zones);
 						detzone_ns->num_active_zones--;
+						SPDK_DEBUGLOG(vbdev_detzone, "RESET: release active(%u)\n", detzone_ns->num_active_zones);
 					}
 					detzone_ns->internal.zone[zone_idx + i].state = SPDK_BDEV_ZONE_STATE_EMPTY;
 					detzone_ns->internal.zone[zone_idx + i].write_pointer =
+														 detzone_ns->internal.zone[zone_idx + i].zone_id;
+					detzone_ns->internal.zone[zone_idx + i].last_write_pointer = 
 														 detzone_ns->internal.zone[zone_idx + i].zone_id;
 					vbdev_detzone_ns_dealloc_zone(detzone_ns, zone_idx + i);
 					break;
 				case SPDK_BDEV_ZONE_OFFLINE:
 					if (_detzone_is_open_state(detzone_ns->internal.zone[zone_idx].state)) {
-						SPDK_DEBUGLOG(vbdev_detzone, "OFFLINE: acquire open(%u)\n", detzone_ns->num_open_zones);
 						detzone_ns->num_open_zones--;
+						SPDK_DEBUGLOG(vbdev_detzone, "OFFLINE: release open(%u)\n", detzone_ns->num_open_zones);
 					}
 					if (_detzone_is_active_state(detzone_ns->internal.zone[zone_idx].state)) {
-						SPDK_DEBUGLOG(vbdev_detzone, "OFFLINE: release active(%u)\n", detzone_ns->num_active_zones);
 						detzone_ns->num_active_zones--;
+						SPDK_DEBUGLOG(vbdev_detzone, "OFFLINE: release active(%u)\n", detzone_ns->num_active_zones);
 					}
 					detzone_ns->internal.zone[zone_idx + i].state = SPDK_BDEV_ZONE_STATE_OFFLINE;
 					detzone_ns->internal.zone[zone_idx + i].write_pointer =
+														 detzone_ns->internal.zone[zone_idx + i].zone_id;
+					detzone_ns->internal.zone[zone_idx + i].last_write_pointer = 
 														 detzone_ns->internal.zone[zone_idx + i].zone_id;
 					vbdev_detzone_ns_dealloc_zone(detzone_ns, zone_idx + i);
 					break;
@@ -570,6 +571,12 @@ vbdev_detzone_reserve_zone(void *arg)
 
 	assert(detzone_ctrlr->thread == spdk_get_thread());
 	if (detzone_ctrlr->num_zone_reserved >= detzone_ctrlr->num_pu) {
+		struct vbdev_detzone_ns_mgmt_io_ctx *mgmt_io_ctx;
+		if (!TAILQ_EMPTY(&detzone_ctrlr->internal.zone_alloc_queued)) {
+			mgmt_io_ctx = TAILQ_FIRST(&detzone_ctrlr->internal.zone_alloc_queued);
+			TAILQ_REMOVE(&detzone_ctrlr->internal.zone_alloc_queued, mgmt_io_ctx, link);
+			vbdev_detzone_ns_alloc_zone(mgmt_io_ctx);
+		}
 		return;
 	}
 	phy_zone = TAILQ_FIRST(&detzone_ctrlr->zone_empty);
@@ -711,17 +718,17 @@ _vbdev_detzone_ns_alloc_md_write_cb(struct spdk_bdev_io *bdev_io, bool success, 
 			if (mgmt_io_ctx->parent_io->type == SPDK_BDEV_IO_TYPE_ZONE_MANAGEMENT) {
 				// EXP_OPEN
 				assert(detzone_ns->internal.zone[zone_idx].state == SPDK_BDEV_ZONE_STATE_EMPTY);
-				SPDK_DEBUGLOG(vbdev_detzone, "OPEN: acquire open(%u)\n", detzone_ns->num_open_zones);
 				detzone_ns->num_open_zones++;
-				SPDK_DEBUGLOG(vbdev_detzone, "OPEN: acquire active(%u)\n", detzone_ns->num_active_zones);
+				SPDK_DEBUGLOG(vbdev_detzone, "OPEN: acquire open(%u)\n", detzone_ns->num_open_zones);
 				detzone_ns->num_active_zones++;
+				SPDK_DEBUGLOG(vbdev_detzone, "OPEN: acquire active(%u)\n", detzone_ns->num_active_zones);
 				detzone_ns->internal.zone[zone_idx].state = SPDK_BDEV_ZONE_STATE_EXP_OPEN;
 			} else if (detzone_ns->internal.zone[zone_idx].state == SPDK_BDEV_ZONE_STATE_EMPTY) {
 				// IMP_OPEN
-				SPDK_DEBUGLOG(vbdev_detzone, "IMP_OPEN: acquire open(%u)\n", detzone_ns->num_open_zones);
 				detzone_ns->num_open_zones++;
-				SPDK_DEBUGLOG(vbdev_detzone, "IMP_OPEN: acquire active(%u)\n", detzone_ns->num_active_zones);
+				SPDK_DEBUGLOG(vbdev_detzone, "IMP_OPEN: acquire open(%u)\n", detzone_ns->num_open_zones);
 				detzone_ns->num_active_zones++;
+				SPDK_DEBUGLOG(vbdev_detzone, "IMP_OPEN: acquire active(%u)\n", detzone_ns->num_active_zones);
 				detzone_ns->internal.zone[zone_idx].state = SPDK_BDEV_ZONE_STATE_IMP_OPEN;
 			} // No state change for the already IMP_OPEN-ed zone
 			detzone_ns->internal.zone[zone_idx].tb_last_update_tsc = spdk_get_ticks();
@@ -809,30 +816,53 @@ vbdev_detzone_ns_alloc_zone(void *arg)
 	assert(stripe_group->slba == UINT64_MAX);
 	assert(zone->write_pointer == zone->zone_id + zone->num_zone_alloc * detzone_ns->base_avail_zcap);
 	// determine the stripe width in the given resource utilization
+
+	if (!TAILQ_EMPTY(&detzone_ctrlr->internal.zone_alloc_queued)) {
+		// queue the allocation
+		TAILQ_INSERT_TAIL(&detzone_ctrlr->internal.zone_alloc_queued, mgmt_io_ctx, link);
+		SPDK_DEBUGLOG(vbdev_detzone, "queued allocation: zone_id(0x%lx)\n", zone->zone_id);
+		//spdk_thread_send_msg(detzone_ctrlr->thread, vbdev_detzone_ns_alloc_zone, arg);
+		return;
+	}
+
+	uint32_t max_avail_zones = (detzone_ctrlr->mgmt_bdev.max_open_zones - detzone_ctrlr->num_pu)
+								 - (detzone_ctrlr->num_zone_opened - detzone_ctrlr->num_zone_reserved);
+	assert(max_avail_zones < detzone_ctrlr->mgmt_bdev.max_open_zones);
+	if (1)
 	{
 		// temporary simple greedy algorithm
-		uint32_t max_avail_zones = detzone_ctrlr->mgmt_bdev.max_open_zones - detzone_ctrlr->num_zone_opened;
-		max_avail_zones -= detzone_ns->detzone_ns_bdev.max_active_zones - detzone_ns->num_active_zones;
+		//max_avail_zones = max_avail_zones / (detzone_ns->detzone_ns_bdev.max_active_zones - detzone_ns->num_active_zones);
 		assert(max_avail_zones > 0);
 		if (sgrp_idx == 0) {
-			stripe_group->width = 1 + spdk_min(1, max_avail_zones);
+			assert(max_avail_zones >= 2*(detzone_ns->detzone_ns_bdev.max_active_zones - detzone_ns->num_active_zones));
+			stripe_group->width = 2;
 		} else {
-			//stripe_group->width = zone->stripe_group[sgrp_idx - 1].width;
+			stripe_group->width = zone->stripe_group[sgrp_idx - 1].width * 2;
 			//stripe_group->width += spdk_min(max_avail_zones, stripe_group->width);
-			stripe_group->width = max_avail_zones;
+			//stripe_group->width = spdk_min(stripe_group->width, max_avail_zones - 2*(detzone_ns->detzone_ns_bdev.max_active_zones - detzone_ns->num_active_zones));
+			stripe_group->width = max_avail_zones - 2*(detzone_ns->detzone_ns_bdev.max_active_zones - detzone_ns->num_active_zones);
 		}
-
 		if (stripe_group->width + zone->num_zone_alloc >
 								 zone->capacity / detzone_ns->base_avail_zcap) {
 			stripe_group->width = zone->capacity / detzone_ns->base_avail_zcap
 										 - zone->num_zone_alloc;
 		}
+	} else {
+		stripe_group->width = 8;
 	}
-	SPDK_DEBUGLOG(vbdev_detzone, "zone_id(0x%lx) sgrp(%lu) select width: %u\n", zone->zone_id, sgrp_idx, stripe_group->width);
+	SPDK_DEBUGLOG(vbdev_detzone, "status(%u/%u) zone_id(0x%lx) sgrp(%lu) phy_opened(%u/%u) max_avail(%u) select width: %u\n",
+									detzone_ns->num_active_zones,
+									detzone_ns->detzone_ns_bdev.max_active_zones,
+									zone->zone_id, sgrp_idx, detzone_ctrlr->num_zone_opened, detzone_ctrlr->mgmt_bdev.max_open_zones, max_avail_zones, stripe_group->width);
+
+	assert(stripe_group->width > 0);
 
 	if (spdk_unlikely(detzone_ctrlr->num_zone_reserved < stripe_group->width)) {
-		// reschdule
-		spdk_thread_send_msg(detzone_ctrlr->thread, vbdev_detzone_ns_alloc_zone, arg);
+		// queue the allocation
+		TAILQ_INSERT_TAIL(&detzone_ctrlr->internal.zone_alloc_queued, mgmt_io_ctx, link);
+		SPDK_DEBUGLOG(vbdev_detzone, "queued allocation (not enough reserved zones): zone_id(0x%lx)\n", zone->zone_id);
+		vbdev_detzone_reserve_zone(detzone_ctrlr);
+		//spdk_thread_send_msg(detzone_ctrlr->thread, vbdev_detzone_ns_alloc_zone, arg);
 		return;
 	}
 
@@ -863,7 +893,6 @@ vbdev_detzone_ns_alloc_zone(void *arg)
 			break;
 		}
 	}
-	detzone_ctrlr->num_zone_reserved -= num_zone_alloc;
 
 	assert((stripe_group->width - num_zone_alloc) <= detzone_ctrlr->num_zone_reserved);
 	while (num_zone_alloc < stripe_group->width) {
@@ -884,6 +913,7 @@ vbdev_detzone_ns_alloc_zone(void *arg)
 			detzone_ns->internal.epoch_num_pu = 0;
 		}
 	}
+	detzone_ctrlr->num_zone_reserved -= num_zone_alloc;
 	
 	for (uint32_t i = 1; i < num_zone_alloc; i++) {
 		// copy the stripe group info to following indexes which share the same group
@@ -1011,13 +1041,12 @@ vbdev_detzone_ns_imp_open_zone(void *arg)
 		for (i = 0; i < stripe_group->width; i++) {
 			phy_zone_idx = zone->base_zone[stripe_group->base_start_idx + i].zone_id /
 								detzone_ctrlr->mgmt_bdev.zone_size;
-			assert(detzone_ctrlr->zone_info[phy_zone_idx].state == SPDK_BDEV_ZONE_STATE_CLOSED);
 			detzone_ctrlr->zone_info[phy_zone_idx].state = SPDK_BDEV_ZONE_STATE_IMP_OPEN;
 		}
 		zone->tb_last_update_tsc = spdk_get_ticks();
 		zone->tb_tokens = detzone_ns->zone_stripe_tb_size * stripe_group->width;
-		SPDK_DEBUGLOG(vbdev_detzone, "IMP_OPEN: acquire open(%u)\n", detzone_ns->num_open_zones);
 		detzone_ns->num_open_zones++;
+		SPDK_DEBUGLOG(vbdev_detzone, "IMP_OPEN: acquire open(%u)\n", detzone_ns->num_open_zones);
 		goto complete;
 	} else if (zone->state == SPDK_BDEV_ZONE_STATE_EMPTY) {
 		if (detzone_ns->num_open_zones >= detzone_ns->detzone_ns_bdev.max_open_zones) {
@@ -1490,6 +1519,17 @@ _detzone_ns_get_zone_info(struct vbdev_detzone_ns *detzone_ns, uint64_t zslba,
 	return 0;
 }
 
+static const char* action_str[SPDK_BDEV_ZONE_EXT_REPORT+1] = {
+	"CLOSE",
+	"FINISH",
+	"OPEN",
+	"RESET",
+	"OFFLINE",
+	"SET_ZDE",
+	"REPORT",
+	"EXT_REPORT"
+};
+
 static int
 _detzone_ns_zone_management(struct vbdev_detzone_ns *detzone_ns, struct spdk_bdev_io *bdev_io,
 							  uint64_t lzslba, bool sel_all, enum spdk_bdev_zone_action action,
@@ -1525,8 +1565,8 @@ _detzone_ns_zone_management(struct vbdev_detzone_ns *detzone_ns, struct spdk_bde
 	mgmt_io_ctx->cb_arg = cb_arg;
 
 	SPDK_DEBUGLOG(vbdev_detzone,
-						 "Zone management: action(%u) select_all(%d) implicit(%d) ns_id(%u) logi_zone_id(0x%lx)\n",
-						 action, sel_all, bdev_io->type == SPDK_BDEV_IO_TYPE_ZONE_MANAGEMENT ? 0:1, detzone_ns->nsid, lzslba);
+						 "Zone management: action(%s) select_all(%d) implicit(%d) ns_id(%u) logi_zone_id(0x%lx)\n",
+						 action_str[action], sel_all, bdev_io->type == SPDK_BDEV_IO_TYPE_ZONE_MANAGEMENT ? 0:1, detzone_ns->nsid, lzslba);
 	switch (action) {
 	case SPDK_BDEV_ZONE_CLOSE:
 		mgmt_func = vbdev_detzone_ns_close_zone;
@@ -1795,12 +1835,12 @@ _vbdev_detzone_ns_zone_wp_forward(struct vbdev_detzone_ns *detzone_ns, struct vb
 	if (zone->write_pointer == zone->zone_id + zone->capacity) {
 		assert(zone->write_pending_blks == 0);
 		zone->state = SPDK_BDEV_ZONE_STATE_FULL;
+		detzone_ns->num_open_zones--;
+		detzone_ns->num_active_zones--;
 		SPDK_DEBUGLOG(vbdev_detzone, "ZONE_FULL (0x%lx): release open(%u) active(%u)\n",
 								 zone->zone_id,
 								 detzone_ns->num_open_zones,
 								 detzone_ns->num_active_zones);
-		detzone_ns->num_open_zones--;
-		detzone_ns->num_active_zones--;
 	}
 }
 
@@ -2099,9 +2139,9 @@ _detzone_ns_write_prepare(struct vbdev_detzone_ns_zone *zone)
 			break;
 		} else if (io_ctx->u.io.next_offset_blocks - zone->zone_id == zone->num_zone_alloc * detzone_ns->base_avail_zcap) {
 			// mark this zone is in progress for imp_open
-			SPDK_DEBUGLOG(vbdev_detzone, "WRITE_PREPARE: IMP_OPEN new stripe group (%lu) at (0x%lx)\n",
-												_vbdev_detzone_ns_get_sgrp_idx(detzone_ns, io_ctx->u.io.next_offset_blocks),
-												io_ctx->u.io.next_offset_blocks);
+			//SPDK_DEBUGLOG(vbdev_detzone, "WRITE_PREPARE: IMP_OPEN new stripe group (%lu) at (0x%lx)\n",
+			//									_vbdev_detzone_ns_get_sgrp_idx(detzone_ns, io_ctx->u.io.next_offset_blocks),
+			//									io_ctx->u.io.next_offset_blocks);
 			zone->doing_imp_open = true;
 			rc = _detzone_ns_zone_management(detzone_ns, bdev_io, io_ctx->u.io.next_offset_blocks, false,
 										SPDK_BDEV_ZONE_OPEN, _detzone_ns_write_cb, zone);
@@ -2994,6 +3034,7 @@ vbdev_detzone_ns_register(const char *ctrl_name, const char *ns_name)
 				zone[i].capacity = detzone_ns->zcap;
 				zone[i].zone_id = detzone_ns->detzone_ns_bdev.zone_size * i;
 				zone[i].write_pointer = zone[i].zone_id;
+				zone[i].last_write_pointer = zone[i].zone_id;
 				TAILQ_INIT(&zone[i].wr_pending);
 				TAILQ_INIT(&zone[i].wr_wait_for_cpl);
 				for (j=0; j < DETZONE_LOGI_ZONE_STRIDE; j++) {
@@ -3290,12 +3331,37 @@ _vbdev_detzone_wr_stat_done(struct spdk_io_channel_iter *i, int status)
 
 	assert(spdk_get_thread() == detzone_ctrlr->thread);
 
+	if (0) {
+		uint64_t written_blks;
+		uint32_t written_zones;
+		written_blks = 0;
+		written_zones = 0;
+		for (uint64_t i=0; i < detzone_ns->detzone_ns_bdev.blockcnt / detzone_ns->detzone_ns_bdev.zone_size; i++) {
+			struct vbdev_detzone_ns_zone *zone;
+			zone = &detzone_ns->internal.zone[i];
+			if (zone->write_pointer > zone->last_write_pointer) {
+				written_blks += zone->write_pointer - zone->last_write_pointer;
+				written_zones += 1;
+				zone->last_write_pointer = zone->write_pointer;
+			}
+		}
+		if (written_blks) {
+			fprintf(stderr, "%lu, ns_id, %u, actives, %u, opens, %u, wr_blks, %lu, wr_zones, %u\n",
+												spdk_get_ticks(),
+												detzone_ns->nsid,
+												detzone_ns->num_active_zones,
+												detzone_ns->num_open_zones,
+												written_blks,
+												written_zones);
+		}
+	}
+
 	detzone_ns_next = TAILQ_NEXT(detzone_ns, link);
 	if (detzone_ns_next == NULL) {
 		if (detzone_ctrlr->internal.active_channels) {
 			avg_write_lat_tsc = detzone_ctrlr->internal.total_write_blk_tsc
 														/ detzone_ctrlr->internal.active_channels;
-			if (1) {
+			if (0) {
 				uint64_t ticks_hz = spdk_get_ticks_hz();
 				printf("Update lat thresh: (avg blk lat: %llu us) %llu us --> %llu us \n",
 						avg_write_lat_tsc * SPDK_SEC_TO_USEC / ticks_hz,
@@ -3364,7 +3430,7 @@ _vbdev_detzone_fini_register(struct vbdev_detzone *detzone_ctrlr, struct vbdev_d
 
 	vbdev_detzone_reserve_zone(detzone_ctrlr);
 	TAILQ_INSERT_TAIL(&g_detzone_ctrlrs, detzone_ctrlr, link);
-	detzone_ctrlr->mgmt_poller = SPDK_POLLER_REGISTER(vbdev_detzone_poller_wr_sched, detzone_ctrlr, 1000000);
+	detzone_ctrlr->mgmt_poller = SPDK_POLLER_REGISTER(vbdev_detzone_poller_wr_sched, detzone_ctrlr, 3000000);
 	if (ctx->cb) {
 		ctx->cb(ctx->cb_arg, 0);
 	}
@@ -3566,6 +3632,8 @@ vbdev_detzone_register(const char *bdev_name, vbdev_detzone_register_cb cb, void
 		TAILQ_INIT(&detzone_ctrlr->zone_reserved);
 		TAILQ_INIT(&detzone_ctrlr->zone_empty);
 
+		TAILQ_INIT(&detzone_ctrlr->internal.zone_alloc_queued);
+
 		// Create the detzone mgmt_ns
 		detzone_ctrlr->mgmt_bdev.name = strdup(assoc->vbdev_name);
 		if (!detzone_ctrlr->mgmt_bdev.name) {
@@ -3617,9 +3685,9 @@ vbdev_detzone_register(const char *bdev_name, vbdev_detzone_register_cb cb, void
 		detzone_ctrlr->mgmt_bdev.zoned = true;
 		detzone_ctrlr->mgmt_bdev.zone_size = bdev->zone_size;
 		detzone_ctrlr->mgmt_bdev.max_zone_append_size = bdev->max_zone_append_size;
-		detzone_ctrlr->mgmt_bdev.max_open_zones = bdev->max_open_zones;
-		detzone_ctrlr->mgmt_bdev.max_active_zones = bdev->max_active_zones;
-		detzone_ctrlr->mgmt_bdev.optimal_open_zones = bdev->optimal_open_zones;
+		detzone_ctrlr->mgmt_bdev.max_open_zones = 256; //bdev->max_open_zones;
+		detzone_ctrlr->mgmt_bdev.max_active_zones = 256; //bdev->max_active_zones;
+		detzone_ctrlr->mgmt_bdev.optimal_open_zones = 256; //bdev->optimal_open_zones;
 
 		detzone_ctrlr->mgmt_bdev.ctxt = detzone_ctrlr;
 		detzone_ctrlr->mgmt_bdev.fn_table = &vbdev_detzone_fn_table;
