@@ -100,7 +100,7 @@ struct vbdev_detzone_ns_mgmt_io_ctx {
 
 struct detzone_bdev_io {
 	int status;
-	bool is_busy;
+	bool in_shrink;
 	enum detzone_io_type type;
 
 	union {
@@ -180,7 +180,6 @@ enum vbdev_detzone_ns_state {
 };
 
 #define DETZONE_MAX_STRIPE_WIDTH 16
-#define DETZONE_LOGI_ZONE_STRIDE 16
 #define DETZONE_RESERVED_ZONES   1
 #define DETZONE_RESERVATION_BLKS 1
 #define DETZONE_INLINE_META_BLKS 1
@@ -213,17 +212,19 @@ struct vbdev_detzone_ns_zone {
 	struct vbdev_detzone_ns_stripe_group stripe_group[DETZONE_MAX_STRIPE_WIDTH];
 
 	void *						shrink_ctx;
+	uint32_t					mgmt_in_progress;
 	uint32_t					wr_zone_in_progress;
 	uint64_t					wr_outstanding_ios;
 	uint64_t					tb_tokens;
 	uint64_t					tb_last_update_tsc;
 
-	uint64_t					last_write_pointer;  // measuring statistic purpose
+	uint64_t					last_write_pointer[5];  // measuring statistic purpose
 
 	TAILQ_HEAD(, detzone_bdev_io)	wr_pending;
 	TAILQ_HEAD(, detzone_bdev_io)	wr_wait_for_cpl;
 
-	TAILQ_ENTRY(vbdev_detzone_ns_zone)	sched_link;
+	TAILQ_ENTRY(vbdev_detzone_ns_zone)	rd_sched_link;
+	TAILQ_ENTRY(vbdev_detzone_ns_zone)	wr_sched_link;
 	TAILQ_ENTRY(vbdev_detzone_ns_zone)	active_link;
 };
 
@@ -263,6 +264,9 @@ struct vbdev_detzone_ns {
 		struct spdk_bit_array *epoch_pu_map;	// PU allocation bitmap for the current epoch
 		uint32_t			   epoch_num_pu;	// PU allocation count for the current epoch
 
+		uint64_t				total_written_blks;
+		uint64_t				total_shrinked_blks;
+
 		TAILQ_HEAD(, vbdev_detzone_ns_zone)	sched_zones;
 		TAILQ_HEAD(, vbdev_detzone_ns_zone)	active_zones;
 		TAILQ_HEAD(, detzone_bdev_io)		rd_pending;
@@ -282,6 +286,10 @@ struct vbdev_detzone_ns_shrink_zone_ctx {
 	uint64_t max_copy_blks;	
 	uint64_t outstanding_ios;
 	uint32_t num_alloc_require;
+
+	uint64_t admitted_read_blks;
+	bool is_readable;
+	bool is_writable;
 
 	void *md_buf;
 	void *io_buf;
