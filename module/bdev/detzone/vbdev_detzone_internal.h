@@ -38,9 +38,19 @@
 #include "spdk/bdev_module.h"
 #include "spdk/assert.h"
 
+#define DETZONE_OVERDRIVE
+
 #define DETZONE_NS_META_FORMAT_VER	1
 #define DETZONE_NS_MAX_ACTIVE_ZONE 	16
 #define DETZONE_NS_MAX_OPEN_ZONE 	16
+#define DETZONE_MAX_STRIPE_WIDTH 16
+#define DETZONE_RESERVED_ZONES   1
+#define DETZONE_RESERVATION_BLKS 1
+#define DETZONE_INLINE_META_BLKS 1
+#define DETZONE_WRITEV_MAX_IOVS 32
+#define DETZONE_MAX_RESERVE_ZONES 16
+
+#define DETZONE_SHIFT_MILLI_BIN 3
 
 enum detzone_io_type {
 	DETZONE_IO_NONE = 0,
@@ -179,16 +189,10 @@ enum vbdev_detzone_ns_state {
 	VBDEV_DETZONE_NS_STATE_PENDING
 };
 
-#define DETZONE_MAX_STRIPE_WIDTH 16
-#define DETZONE_RESERVED_ZONES   1
-#define DETZONE_RESERVATION_BLKS 1
-#define DETZONE_INLINE_META_BLKS 1
-#define DETZONE_WRITEV_MAX_IOVS 32
-#define DETZONE_MAX_RESERVE_ZONES 16
-
 struct vbdev_detzone_ns_stripe_group {
 	uint64_t				slba;
 	uint32_t				width;
+	uint32_t				stripe_blks;
 	uint32_t				base_start_idx;
 	//uint32_t				base_zone_idx[DETZONE_MAX_STRIPE_WIDTH];
 };
@@ -220,10 +224,14 @@ struct vbdev_detzone_ns_zone {
 
 	uint64_t					last_write_pointer[5];  // measuring statistic purpose
 
+	pthread_spinlock_t				rd_lock;
+	uint64_t						rd_cong_vec;
+	TAILQ_HEAD(, detzone_bdev_io)	rd_pending;
+
+	pthread_spinlock_t				wr_lock;
 	TAILQ_HEAD(, detzone_bdev_io)	wr_pending;
 	TAILQ_HEAD(, detzone_bdev_io)	wr_wait_for_cpl;
 
-	TAILQ_ENTRY(vbdev_detzone_ns_zone)	rd_sched_link;
 	TAILQ_ENTRY(vbdev_detzone_ns_zone)	wr_sched_link;
 	TAILQ_ENTRY(vbdev_detzone_ns_zone)	active_link;
 };
@@ -246,7 +254,7 @@ struct vbdev_detzone_ns {
 	uint64_t	base_avail_zcap;
 
 	// Namespace specific configuration parameters
-	uint32_t	zone_stripe_blks; /* stripe size (in blocks) */
+	//uint32_t	zone_stripe_blks; /* stripe size (in blocks) */
 	uint32_t	zone_stripe_tb_size;
 	uint64_t	zcap;		// Logical Zone Capacity
 	uint32_t	padding_blocks;	// num of blocks for padding at the beginning of base zone
@@ -263,6 +271,13 @@ struct vbdev_detzone_ns {
 		struct vbdev_detzone_ns_zone *zone;
 		struct spdk_bit_array *epoch_pu_map;	// PU allocation bitmap for the current epoch
 		uint32_t			   epoch_num_pu;	// PU allocation count for the current epoch
+
+		uint32_t				avg_open_zones_milli;
+		uint32_t				essentials;
+		uint32_t				spares;
+		uint32_t				used_spared;
+		uint32_t				lent_spares;
+		uint32_t				leased_spares;
 
 		uint64_t				total_written_blks;
 		uint64_t				total_shrinked_blks;
@@ -306,7 +321,6 @@ struct __attribute__((packed)) vbdev_detzone_zone_md {
 	uint32_t			ns_id;
 	uint64_t			lzone_id;
 	uint8_t				stripe_id;
-	uint32_t			stripe_size;
 
 	struct vbdev_detzone_ns_stripe_group stripe_group;
 };
@@ -321,7 +335,6 @@ struct vbdev_detzone_zone_info {
 	uint32_t			ns_id;
 	uint64_t			lzone_id;
 	uint32_t			stripe_id;
-	uint32_t			stripe_size;
 
 	struct vbdev_detzone_ns_stripe_group stripe_group;
 
@@ -346,7 +359,12 @@ struct vbdev_detzone {
 
 	uint32_t			per_zone_mdts;
 
+	uint32_t			max_ns;				/* maximum attachable number of namespace */
 	uint32_t			num_ns;				/* number of namespace */
+	uint32_t			base_essentials;
+	uint32_t			base_spares;
+	uint32_t			avail_spares;		/* number of spares are avilable to allot for namespaces */
+	uint32_t			base_stripe_blks;
 	uint64_t			claimed_blockcnt; /* claimed blocks by namespaces */
 	struct spdk_thread		*thread;    /* thread where base device is opened */
 
@@ -414,9 +432,9 @@ _dump_zone_info(struct vbdev_detzone_ns *detzone_ns)
 
 	total_lzones = detzone_ns->detzone_ns_bdev.blockcnt / detzone_ns->detzone_ns_bdev.zone_size;
 	fprintf(stderr, "--------------------------------\n");
-	fprintf(stderr, "NS ID: %u\nZONE SIZE: %lu\nZONE CAPACITY: %lu\nNUM ZONES: %lu\nSTRIPE SIZE: %u\n",
+	fprintf(stderr, "NS ID: %u\nZONE SIZE: %lu\nZONE CAPACITY: %lu\nNUM ZONES: %lu\n",
 						detzone_ns->nsid, detzone_ns->detzone_ns_bdev.zone_size,
-						detzone_ns->zcap, total_lzones, detzone_ns->zone_stripe_blks);
+						detzone_ns->zcap, total_lzones);
 	for (i=0; i < total_lzones; i++) {
 		if (zone[i].state == SPDK_BDEV_ZONE_STATE_EMPTY) {
 			continue;
@@ -431,10 +449,11 @@ _dump_zone_info(struct vbdev_detzone_ns *detzone_ns)
 			if (zone[i].stripe_group[j].slba == UINT64_MAX) {
 				break;
 			}
-			fprintf(stderr, ", stripe_grp[%lu]: slba 0x%010lx width %02u sbidx %02u",
+			fprintf(stderr, ", stripe_grp[%lu]: slba 0x%010lx width %02u s_blks %02u base_idx %02u",
 										 j,
 										 zone[i].stripe_group[j].slba,
 										 zone[i].stripe_group[j].width,
+										 zone[i].stripe_group[j].stripe_blks,
 										 zone[i].stripe_group[j].base_start_idx);
 			j += zone[i].stripe_group[j].width;
 		}
