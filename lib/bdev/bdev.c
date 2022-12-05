@@ -5685,11 +5685,10 @@ spdk_bdev_io_get_nvme_fused_status(const struct spdk_bdev_io *bdev_io, uint32_t 
 	*cdw0 = bdev_io->internal.error.nvme.cdw0;
 }
 
-void
-spdk_bdev_io_get_submit_tsc(const struct spdk_bdev_io *bdev_io, uint64_t *submit_tsc)
+uint64_t
+spdk_bdev_io_get_submit_tsc(const struct spdk_bdev_io *bdev_io)
 {
-	assert(submit_tsc != NULL);
-	*submit_tsc = bdev_io->internal.submit_tsc;
+	return bdev_io->internal.submit_tsc;
 }
 
 struct spdk_thread *

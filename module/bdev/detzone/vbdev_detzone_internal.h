@@ -172,6 +172,9 @@ struct detzone_io_channel {
 	uint32_t 	ch_id;
 	struct spdk_io_channel	*base_ch; /* IO channel of base device */
 
+	// latency measurement for the read I/O scheduler
+	uint64_t			rd_lat_tsc_thresh;
+	
 	// statistic for the write I/O scheduler
 	uint64_t			write_blks;
 	uint64_t			total_write_blk_tsc;
@@ -197,6 +200,14 @@ struct vbdev_detzone_ns_stripe_group {
 	//uint32_t				base_zone_idx[DETZONE_MAX_STRIPE_WIDTH];
 };
 
+struct vbdev_detzone_ns_cong_ctrl {
+	uint32_t						cwnd;
+	uint32_t						cwnd_update_delay;
+	uint32_t						cpls;
+	uint32_t						outstandings;
+	TAILQ_HEAD(, detzone_bdev_io)	pending;
+};
+
 struct vbdev_detzone_ns_zone {
 	uint64_t			zone_id;
 	uint64_t			write_pointer;
@@ -214,6 +225,7 @@ struct vbdev_detzone_ns_zone {
 
 	uint32_t					num_zone_alloc;
 	struct vbdev_detzone_ns_stripe_group stripe_group[DETZONE_MAX_STRIPE_WIDTH];
+	struct vbdev_detzone_ns_cong_ctrl rd_cong[DETZONE_MAX_STRIPE_WIDTH];
 
 	void *						shrink_ctx;
 	uint32_t					mgmt_in_progress;
@@ -225,9 +237,6 @@ struct vbdev_detzone_ns_zone {
 	uint64_t					last_write_pointer[5];  // measuring statistic purpose
 
 	pthread_spinlock_t				rd_lock;
-	uint64_t						rd_cong_vec;
-	TAILQ_HEAD(, detzone_bdev_io)	rd_pending;
-
 	pthread_spinlock_t				wr_lock;
 	TAILQ_HEAD(, detzone_bdev_io)	wr_pending;
 	TAILQ_HEAD(, detzone_bdev_io)	wr_wait_for_cpl;
