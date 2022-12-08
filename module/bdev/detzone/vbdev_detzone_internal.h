@@ -49,8 +49,8 @@
 #define DETZONE_INLINE_META_BLKS 1
 #define DETZONE_WRITEV_MAX_IOVS 32
 #define DETZONE_MAX_RESERVE_ZONES 16
-
-#define DETZONE_SHIFT_MILLI_BIN 3
+#define DETZONE_MAX_NAMESPACES 8
+#define DETZONE_SHIFT_MILLI_BIN 10
 
 enum detzone_io_type {
 	DETZONE_IO_NONE = 0,
@@ -121,7 +121,6 @@ struct detzone_bdev_io {
 			uint64_t iov_offset;
 			uint64_t next_offset_blocks;
 			uint64_t remain_blocks;
-			uint64_t boundary_blks;
 		} io;
 
 		struct {
@@ -168,12 +167,23 @@ struct detzone_bdev_io {
 	TAILQ_ENTRY(detzone_bdev_io) link;
 };
 
+struct detzone_io_channel_cong {
+	struct __stripe_group_cong {
+		uint32_t						cwnd;
+		uint32_t						cwnd_update_delay;
+		uint32_t						cpls;
+		uint32_t						outstandings;
+		TAILQ_HEAD(, detzone_bdev_io)	pending;
+	} sgrp[DETZONE_MAX_STRIPE_WIDTH];
+};
+
 struct detzone_io_channel {
 	uint32_t 	ch_id;
 	struct spdk_io_channel	*base_ch; /* IO channel of base device */
 
 	// latency measurement for the read I/O scheduler
 	uint64_t			rd_lat_tsc_thresh;
+	struct detzone_io_channel_cong *zone_cong;
 	
 	// statistic for the write I/O scheduler
 	uint64_t			write_blks;
@@ -200,14 +210,6 @@ struct vbdev_detzone_ns_stripe_group {
 	//uint32_t				base_zone_idx[DETZONE_MAX_STRIPE_WIDTH];
 };
 
-struct vbdev_detzone_ns_cong_ctrl {
-	uint32_t						cwnd;
-	uint32_t						cwnd_update_delay;
-	uint32_t						cpls;
-	uint32_t						outstandings;
-	TAILQ_HEAD(, detzone_bdev_io)	pending;
-};
-
 struct vbdev_detzone_ns_zone {
 	uint64_t			zone_id;
 	uint64_t			write_pointer;
@@ -220,24 +222,28 @@ struct vbdev_detzone_ns_zone {
 		// vectored I/O
 		struct iovec			iovs[DETZONE_WRITEV_MAX_IOVS];
 		uint32_t				iov_cnt;
-		uint64_t				iov_blks;
+		uint32_t				iov_offset;
+		uint64_t				iovs_blks;
+		uint64_t				iov_blks_in_flight;
 	} base_zone[DETZONE_MAX_STRIPE_WIDTH];
 
 	uint32_t					num_zone_alloc;
 	struct vbdev_detzone_ns_stripe_group stripe_group[DETZONE_MAX_STRIPE_WIDTH];
-	struct vbdev_detzone_ns_cong_ctrl rd_cong[DETZONE_MAX_STRIPE_WIDTH];
 
 	void *						shrink_ctx;
 	uint32_t					mgmt_in_progress;
-	uint32_t					wr_zone_in_progress;
+	//uint32_t					wr_zone_in_progress;
+	uint64_t					wr_blks_in_flight;
+	uint64_t					wr_blks_to_sumbit;
 	uint64_t					wr_outstanding_ios;
 	uint64_t					tb_tokens;
+	uint64_t					tb_size;
+	uint64_t					tb_size_max;
+	uint64_t					tb_cpl_bytes;
 	uint64_t					tb_last_update_tsc;
 
 	uint64_t					last_write_pointer[5];  // measuring statistic purpose
 
-	pthread_spinlock_t				rd_lock;
-	pthread_spinlock_t				wr_lock;
 	TAILQ_HEAD(, detzone_bdev_io)	wr_pending;
 	TAILQ_HEAD(, detzone_bdev_io)	wr_wait_for_cpl;
 
@@ -264,7 +270,7 @@ struct vbdev_detzone_ns {
 
 	// Namespace specific configuration parameters
 	//uint32_t	zone_stripe_blks; /* stripe size (in blocks) */
-	uint32_t	zone_stripe_tb_size;
+	//uint32_t	zone_stripe_tb_size;
 	uint64_t	zcap;		// Logical Zone Capacity
 	uint32_t	padding_blocks;	// num of blocks for padding at the beginning of base zone
 
@@ -284,9 +290,10 @@ struct vbdev_detzone_ns {
 		uint32_t				avg_open_zones_milli;
 		uint32_t				essentials;
 		uint32_t				spares;
-		uint32_t				used_spared;
+		uint32_t				used_spares;
 		uint32_t				lent_spares;
 		uint32_t				leased_spares;
+		uint32_t				inactivity_cnt;
 
 		uint64_t				total_written_blks;
 		uint64_t				total_shrinked_blks;
@@ -351,6 +358,8 @@ struct vbdev_detzone_zone_info {
 	TAILQ_ENTRY(vbdev_detzone_zone_info) link;
 };
 
+#define DETZONE_MAX_ALLOC_HISTORY	(1 << 7)
+
 /* List of detzone bdev ctrls and associated info for each. */
 struct vbdev_detzone {
 	struct spdk_bdev		*base_bdev; /* the thing we're attaching to */
@@ -367,9 +376,11 @@ struct vbdev_detzone {
 	uint64_t 			zone_alloc_cnt;		  /* zone allocation counter */ 
 
 	uint32_t			per_zone_mdts;
+	uint64_t			wr_lat_max_thresh;
 
 	uint32_t			max_ns;				/* maximum attachable number of namespace */
 	uint32_t			num_ns;				/* number of namespace */
+	uint32_t			base_width;
 	uint32_t			base_essentials;
 	uint32_t			base_spares;
 	uint32_t			avail_spares;		/* number of spares are avilable to allot for namespaces */
@@ -386,6 +397,11 @@ struct vbdev_detzone {
 		// statistic for the write I/O scheduler
 		uint64_t			active_channels;
 		uint64_t			total_write_blk_tsc;
+
+		uint32_t			alloc_history_shrink_cnt;
+		uint32_t			alloc_history_curr_cnt;
+		uint32_t			alloc_history_tail;
+		uint32_t			alloc_history[DETZONE_MAX_ALLOC_HISTORY];
 
 		TAILQ_HEAD(, vbdev_detzone_ns_mgmt_io_ctx) zone_alloc_queued;
 		TAILQ_HEAD(, vbdev_detzone_ns_shrink_zone_ctx) zone_shrink_queued;
