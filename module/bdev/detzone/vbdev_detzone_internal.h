@@ -39,6 +39,9 @@
 #include "spdk/assert.h"
 
 #define DETZONE_OVERDRIVE
+#define DETZONE_UBENCH
+//#define DETZONE_NO_ADMIT_CTRL
+//#define DETZONE_NO_CC
 
 #define DETZONE_NS_META_FORMAT_VER	1
 #define DETZONE_NS_MAX_ACTIVE_ZONE 	16
@@ -175,6 +178,11 @@ struct detzone_io_channel_cong {
 		uint32_t						outstandings;
 		TAILQ_HEAD(, detzone_bdev_io)	pending;
 	} sgrp[DETZONE_MAX_STRIPE_WIDTH];
+
+	uint64_t	write_blks;
+	uint64_t	write_blks_tsc;
+
+	TAILQ_ENTRY(detzone_io_channel_cong) link;
 };
 
 struct detzone_io_channel {
@@ -186,10 +194,12 @@ struct detzone_io_channel {
 	struct detzone_io_channel_cong *zone_cong;
 	
 	// statistic for the write I/O scheduler
-	uint64_t			write_blks;
-	uint64_t			total_write_blk_tsc;
+	// uint64_t			write_blks;
+	// uint64_t			total_write_blk_tsc;
 
 	struct spdk_poller	*write_sched_poller; /* credit generator */
+
+	TAILQ_HEAD(, detzone_io_channel_cong)	write_zones;
 };
 
 struct detzone_mgmt_channel {
@@ -224,7 +234,7 @@ struct vbdev_detzone_ns_zone {
 		uint32_t				iov_cnt;
 		uint32_t				iov_offset;
 		uint64_t				iovs_blks;
-		uint64_t				iov_blks_in_flight;
+		//uint64_t				iov_blks_in_flight;
 	} base_zone[DETZONE_MAX_STRIPE_WIDTH];
 
 	uint32_t					num_zone_alloc;
@@ -232,10 +242,10 @@ struct vbdev_detzone_ns_zone {
 
 	void *						shrink_ctx;
 	uint32_t					mgmt_in_progress;
-	//uint32_t					wr_zone_in_progress;
-	uint64_t					wr_blks_in_flight;
-	uint64_t					wr_blks_to_sumbit;
-	uint64_t					wr_outstanding_ios;
+	uint32_t					wr_zone_in_progress;
+	//uint64_t					wr_blks_in_flight;
+	//uint64_t					wr_blks_to_sumbit;
+	uint32_t					wr_outstanding_ios;
 	uint64_t					tb_tokens;
 	uint64_t					tb_size;
 	uint64_t					tb_size_max;
@@ -257,6 +267,7 @@ struct vbdev_detzone_ns {
 
 	struct spdk_thread 		*primary_thread;  /* thread where the namespace process write IOs */
 	struct spdk_io_channel 	*primary_ch;
+	struct spdk_poller		*primary_poller;
 	
 	uint32_t	nsid;
 	bool		active;
@@ -395,8 +406,8 @@ struct vbdev_detzone {
 
 	struct __detzone_internal {
 		// statistic for the write I/O scheduler
-		uint64_t			active_channels;
-		uint64_t			total_write_blk_tsc;
+		uint64_t			active_write_zones;
+		uint64_t			total_avg_write_blk_tsc;
 
 		uint32_t			alloc_history_shrink_cnt;
 		uint32_t			alloc_history_curr_cnt;
