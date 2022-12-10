@@ -39,7 +39,8 @@
 #include "spdk/assert.h"
 
 #define DETZONE_OVERDRIVE
-#define DETZONE_UBENCH
+//#define DETZONE_UBENCH
+//#define DETZONE_UBENCH_OVERDRIVE
 //#define DETZONE_NO_ADMIT_CTRL
 //#define DETZONE_NO_CC
 
@@ -198,6 +199,9 @@ struct detzone_io_channel {
 	// uint64_t			total_write_blk_tsc;
 
 	struct spdk_poller	*write_sched_poller; /* credit generator */
+#ifdef DETZONE_UBENCH
+	pthread_spinlock_t lock;
+#endif
 
 	TAILQ_HEAD(, detzone_io_channel_cong)	write_zones;
 };
@@ -218,6 +222,7 @@ struct vbdev_detzone_ns_stripe_group {
 	uint32_t				stripe_blks;
 	uint32_t				base_start_idx;
 	//uint32_t				base_zone_idx[DETZONE_MAX_STRIPE_WIDTH];
+	uint32_t				leased_width;
 };
 
 struct vbdev_detzone_ns_zone {
@@ -304,10 +309,12 @@ struct vbdev_detzone_ns {
 		uint32_t				used_spares;
 		uint32_t				lent_spares;
 		uint32_t				leased_spares;
+		uint32_t				reclaimed_spares;
 		uint32_t				inactivity_cnt;
 
 		uint64_t				total_written_blks;
 		uint64_t				total_shrinked_blks;
+		uint64_t				last_written_blks;
 
 		TAILQ_HEAD(, vbdev_detzone_ns_zone)	sched_zones;
 		TAILQ_HEAD(, vbdev_detzone_ns_zone)	active_zones;
@@ -413,6 +420,7 @@ struct vbdev_detzone {
 		uint32_t			alloc_history_curr_cnt;
 		uint32_t			alloc_history_tail;
 		uint32_t			alloc_history[DETZONE_MAX_ALLOC_HISTORY];
+		uint32_t			alloc_history_actives[DETZONE_MAX_ALLOC_HISTORY];
 
 		TAILQ_HEAD(, vbdev_detzone_ns_mgmt_io_ctx) zone_alloc_queued;
 		TAILQ_HEAD(, vbdev_detzone_ns_shrink_zone_ctx) zone_shrink_queued;

@@ -580,9 +580,9 @@ _detzone_zone_management_done(struct spdk_bdev_io *bdev_io, bool success, void *
 					case SPDK_BDEV_ZONE_STATE_FULL:
 						zone->state = SPDK_BDEV_ZONE_STATE_EMPTY;
 						zone->write_pointer = zone->zone_id;
-						zone->last_write_pointer[0] = zone->zone_id;
-						zone->last_write_pointer[1] = zone->zone_id;
-						zone->last_write_pointer[2] = zone->zone_id;
+						zone->last_write_pointer[0] = zone->zone_id + zone->capacity;
+						zone->last_write_pointer[1] = zone->zone_id + zone->capacity;
+						zone->last_write_pointer[2] = zone->zone_id + zone->capacity;
 						vbdev_detzone_ns_dealloc_zone(detzone_ns, zone_idx + i);
 						/* fall through */
 					default:
@@ -995,33 +995,167 @@ _vbdev_detzone_ns_alloc_md_write(struct vbdev_detzone_ns_mgmt_io_ctx *mgmt_io_ct
 }
 
 static void
-vbdev_detzone_redist_spares(struct vbdev_detzone *detzone_ctrlr)
+vbdev_detzone_redist_spares(void *arg)
 {
+	struct vbdev_detzone *detzone_ctrlr = arg;
 	struct vbdev_detzone_ns *detzone_ns;
 	uint32_t ns_weight[DETZONE_MAX_NAMESPACES] = {0};
+	uint32_t ns_actives[DETZONE_MAX_NAMESPACES] = {0};
+	uint32_t new_baseline[DETZONE_MAX_NAMESPACES] = {0};
+	uint32_t total_weight = 0;
 	uint32_t harvested_spares = 0;
+	uint32_t need_reclaim = 0;
 	uint32_t dist_spares = 0;
+	uint32_t num_active_ns = 0;
+	uint32_t num_awaking_ns = 0;
 
 #ifdef DETZONE_UBENCH
-	return;
+	//return;
 #endif
+	for (int i = 0; i < DETZONE_MAX_ALLOC_HISTORY; i++) {
+		ns_weight[detzone_ctrlr->internal.alloc_history[i]] += 1;
+		if (ns_actives[detzone_ctrlr->internal.alloc_history[i]] == 0) {
+			ns_actives[detzone_ctrlr->internal.alloc_history[i]] = detzone_ctrlr->internal.alloc_history_actives[i];
+		} else {
+			ns_actives[detzone_ctrlr->internal.alloc_history[i]]
+				 = DETZONE_EWMA(ns_actives[detzone_ctrlr->internal.alloc_history[i]], detzone_ctrlr->internal.alloc_history_actives[i]);
+		}
+	}
+
+	for (int i = 0; i < DETZONE_MAX_NAMESPACES; i++) {
+		if (ns_weight[i] != 0) {
+			num_active_ns += 1;
+		}
+	}
+
 	TAILQ_FOREACH(detzone_ns, &detzone_ctrlr->ns, link) {
-		uint32_t total_avail_spares;
+		uint32_t total_avail_spares, unused_spares;
+/* 		OLD
 		total_avail_spares = detzone_ns->internal.spares + detzone_ns->internal.leased_spares
 										- detzone_ns->internal.lent_spares;
 		if (total_avail_spares - detzone_ns->internal.used_spares > 0) {
 			harvested_spares += total_avail_spares - detzone_ns->internal.used_spares;
 			detzone_ns->internal.lent_spares += total_avail_spares - detzone_ns->internal.used_spares;
 		}
+ */
+/* 		if (detzone_ns->internal.used_spares < detzone_ns->internal.spares) {
+			total_avail_spares = detzone_ns->internal.spares - detzone_ns->internal.used_spares;
+			detzone_ns->internal.spares = detzone_ns->internal.used_spares;
+			if (detzone_ns->internal.leased_spares > 0) {
+				total_avail_spares -= spdk_min(detzone_ns->internal.leased_spares, total_avail_spares);
+			}
+			harvested_spares += total_avail_spares;
+		}
+ */	
+		total_avail_spares = detzone_ns->internal.spares + detzone_ns->internal.leased_spares
+									- detzone_ns->internal.lent_spares;
+		unused_spares = total_avail_spares - detzone_ns->internal.used_spares;
+		if (ns_weight[detzone_ns->nsid] == 0) {
+			harvested_spares += unused_spares;
+			detzone_ns->internal.lent_spares += unused_spares;
+			if (detzone_ns->internal.leased_spares > detzone_ns->internal.lent_spares) {
+				detzone_ns->internal.leased_spares -= detzone_ns->internal.lent_spares;
+				detzone_ns->internal.lent_spares = 0;
+			} else {
+				detzone_ns->internal.lent_spares -= detzone_ns->internal.leased_spares;
+				detzone_ns->internal.leased_spares = 0;
+			}
+		} else if (detzone_ns->internal.leased_spares > 0) {
+			if (detzone_ns->internal.leased_spares > unused_spares) {
+				detzone_ns->internal.leased_spares -= unused_spares;
+			} else {
+				unused_spares = detzone_ns->internal.leased_spares;
+				detzone_ns->internal.leased_spares = 0;
+			}
+			if (detzone_ns->internal.reclaimed_spares > unused_spares) {
+				detzone_ns->internal.reclaimed_spares -= unused_spares;
+			} else {
+				detzone_ns->internal.reclaimed_spares = 0;
+			}
+			harvested_spares += unused_spares;
+		}
 	}
 
 	detzone_ctrlr->avail_spares += harvested_spares;
+	//fprintf(stderr, "global overdrive: harvested(%u) total_avail(%u)\n", harvested_spares, detzone_ctrlr->avail_spares);
 
-	for (int i = 0; i < DETZONE_MAX_ALLOC_HISTORY; i++) {
-		ns_weight[detzone_ctrlr->internal.alloc_history[i]] += 1;
+	TAILQ_FOREACH(detzone_ns, &detzone_ctrlr->ns, link) {
+		if (ns_weight[detzone_ns->nsid] == 0) {
+			continue;
+		}
+		if (detzone_ns->internal.lent_spares > detzone_ctrlr->avail_spares) {
+			detzone_ns->internal.lent_spares -= detzone_ctrlr->avail_spares;
+			detzone_ctrlr->avail_spares = 0;
+			need_reclaim += detzone_ns->internal.lent_spares;
+			num_awaking_ns += 1;
+			break;
+		} else if (detzone_ns->internal.lent_spares > 0) {
+			detzone_ctrlr->avail_spares -= detzone_ns->internal.lent_spares;
+			detzone_ns->internal.lent_spares = 0;
+		}
 	}
-	fprintf(stderr, "global overdrive: harvested(%u) total_avail(%u)\n", harvested_spares, detzone_ctrlr->avail_spares);
 
+	if (detzone_ctrlr->avail_spares > 0) {
+		TAILQ_FOREACH(detzone_ns, &detzone_ctrlr->ns, link) {
+			// fprintf(stderr, "global overdrive: nsid(%u) weight(%u) org_spares(%u+%u-%u) ", detzone_ns->nsid, ns_weight[detzone_ns->nsid],
+			// 				detzone_ns->internal.spares, detzone_ns->internal.leased_spares, detzone_ns->internal.lent_spares);
+			if (ns_weight[detzone_ns->nsid] != 0) {
+				detzone_ns->internal.leased_spares += detzone_ctrlr->avail_spares / num_active_ns;
+				if (detzone_ns->internal.lent_spares > detzone_ns->internal.leased_spares) {
+					detzone_ns->internal.lent_spares -= detzone_ns->internal.leased_spares;
+					detzone_ns->internal.leased_spares = 0;
+				} else {
+					detzone_ns->internal.leased_spares -= detzone_ns->internal.lent_spares;
+					detzone_ns->internal.lent_spares = 0;
+				}
+				detzone_ctrlr->avail_spares -= detzone_ctrlr->avail_spares / num_active_ns;
+			}
+			// fprintf(stderr, "new_spares(%u+%u-%u)\n",
+			// 				detzone_ns->internal.spares, detzone_ns->internal.leased_spares, detzone_ns->internal.lent_spares);
+		}
+	} else if (need_reclaim) {
+		TAILQ_FOREACH(detzone_ns, &detzone_ctrlr->ns, link) {
+			if (ns_weight[detzone_ns->nsid] != 0 && detzone_ns->internal.leased_spares > 0) {
+				if (detzone_ns->internal.leased_spares > need_reclaim) {
+					detzone_ns->internal.reclaimed_spares = need_reclaim;
+					need_reclaim = 0;
+				} else {
+					need_reclaim -= detzone_ns->internal.leased_spares;
+					detzone_ns->internal.reclaimed_spares = detzone_ns->internal.leased_spares;
+				}
+			}
+		}
+	}
+/* 
+	for (int i = 0; i < DETZONE_MAX_NAMESPACES; i++) {
+		if (ns_weight[i] != 0) {
+			ns_weight[i] = (ns_weight[i] << 10) / ns_actives[i];
+		}
+		total_weight += ns_weight[i];
+	}
+
+	// setup new baseline
+	for (int i = 0; i < DETZONE_MAX_NAMESPACES; i++) {
+		new_baseline[i] = (detzone_ctrlr->base_spares * detzone_ctrlr->max_ns)
+								* ns_weight[i] / total_weight;
+	}
+
+	TAILQ_FOREACH(detzone_ns, &detzone_ctrlr->ns, link) {
+		fprintf(stderr, "global overdrive: nsid(%u) weight(%u) org_spares(%u-%u+%u) ", detzone_ns->nsid, ns_weight[detzone_ns->nsid],
+						detzone_ns->internal.spares, detzone_ns->internal.leased_spares, detzone_ns->internal.lent_spares);
+		detzone_ns->internal.leased_spares = 0;
+		detzone_ns->internal.lent_spares = 0;
+		if (detzone_ns->internal.spares > new_baseline[detzone_ns->nsid]) {
+			detzone_ns->internal.leased_spares = detzone_ns->internal.spares - new_baseline[detzone_ns->nsid];
+		} else {
+			detzone_ns->internal.lent_spares = new_baseline[detzone_ns->nsid] - detzone_ns->internal.spares;
+		}
+		fprintf(stderr, "new_spares(%u-%u+%u)\n",
+						detzone_ns->internal.spares, detzone_ns->internal.leased_spares, detzone_ns->internal.lent_spares);
+	}
+ */
+
+/* 		OLD
 	TAILQ_FOREACH(detzone_ns, &detzone_ctrlr->ns, link) {
 		fprintf(stderr, "global overdrive: nsid(%u) weight(%u) org_spares(%u+%u-%u) ", detzone_ns->nsid, ns_weight[detzone_ns->nsid],
 						detzone_ns->internal.spares, detzone_ns->internal.leased_spares, detzone_ns->internal.lent_spares);
@@ -1039,8 +1173,9 @@ vbdev_detzone_redist_spares(struct vbdev_detzone *detzone_ctrlr)
 		fprintf(stderr, "new_spares(%u+%u-%u)\n",
 						detzone_ns->internal.spares, detzone_ns->internal.leased_spares, detzone_ns->internal.lent_spares);
 	}
-	assert(dist_spares >= detzone_ctrlr->avail_spares);
-	detzone_ctrlr->avail_spares -= dist_spares;
+ */
+	// assert(dist_spares >= detzone_ctrlr->avail_spares);
+	// detzone_ctrlr->avail_spares -= dist_spares;
 }
 
 static void
@@ -1088,21 +1223,25 @@ vbdev_detzone_ns_alloc_zone(void *arg)
 
 #ifdef DETZONE_OVERDRIVE
 #ifdef DETZONE_UBENCH
+#ifndef DETZONE_UBENCH_OVERDRIVE
 	stripe_group->width = spdk_align32pow2((detzone_ns->internal.essentials + detzone_ns->internal.spares) / 16);
-	if (detzone_ns->nsid == 4) {
+	//if (detzone_ns->nsid == 4) {
+	if (0) {
 		stripe_group->stripe_blks =	detzone_ctrlr->base_stripe_blks;
 	} else {
 		stripe_group->stripe_blks = detzone_ctrlr->base_stripe_blks >> (spdk_u32log2(stripe_group->width) - spdk_u32log2(detzone_ctrlr->base_width));
 	}
+#endif
 #else
+
 	total_spares = (detzone_ns->internal.spares - detzone_ns->internal.lent_spares)
-						+ detzone_ns->internal.leased_spares;
+						+ detzone_ns->internal.leased_spares - detzone_ns->internal.reclaimed_spares;
 	if (total_spares <= detzone_ns->internal.used_spares) {
 		width = detzone_ctrlr->base_width;
 	} else {
 		avail_spares = total_spares - detzone_ns->internal.used_spares;
 		width = 1u << spdk_u32log2(detzone_ctrlr->base_width + total_spares
-										/ (1 + (detzone_ns->internal.avg_open_zones_milli
+										/ ( ((detzone_ns->internal.avg_open_zones_milli + DETZONE_SHIFT_MILLI_BIN >> 1)
 											  >> DETZONE_SHIFT_MILLI_BIN)));
 		if (spdk_u32log2(avail_spares + detzone_ctrlr->base_width) < spdk_u32log2(width)) {
 			width = 1u << spdk_u32log2(avail_spares + detzone_ctrlr->base_width);
@@ -1112,11 +1251,43 @@ vbdev_detzone_ns_alloc_zone(void *arg)
 			width = detzone_ctrlr->base_width << (spdk_u32log2(detzone_ctrlr->base_stripe_blks) - 1);
 		}
 	}
+
+/* 	total_spares = detzone_ns->internal.spares - detzone_ns->internal.leased_spares
+							+ detzone_ns->internal.lent_spares;
+	if (total_spares <= detzone_ns->internal.used_spares) {
+		width = detzone_ctrlr->base_width;
+	} else {
+		avail_spares = total_spares - detzone_ns->internal.lent_spares;
+		width = 1u << spdk_u32log2(detzone_ctrlr->base_width + total_spares
+										/ ( ((detzone_ns->internal.avg_open_zones_milli + DETZONE_SHIFT_MILLI_BIN >> 1)
+											  >> DETZONE_SHIFT_MILLI_BIN)));
+		if (width > (avail_spares + detzone_ctrlr->base_width)
+				 && detzone_ns->internal.lent_spares > width - (avail_spares + detzone_ctrlr->base_width)) {
+			uint32_t reclaims;
+			reclaims = width - avail_spares - detzone_ctrlr->base_width;
+			if (detzone_ctrlr->avail_spares > reclaims) {
+				detzone_ctrlr->avail_spares -= reclaims;
+				detzone_ns->internal.lent_spares -= reclaims;
+				detzone_ns->internal.spares += reclaims;
+				avail_spares = width - detzone_ctrlr->base_width;
+			}
+		}
+		if (spdk_u32log2(avail_spares + detzone_ctrlr->base_width) < spdk_u32log2(width)) {
+			width = 1u << spdk_u32log2(avail_spares + detzone_ctrlr->base_width);
+		}
+		if (spdk_u32log2(width) - spdk_u32log2(detzone_ctrlr->base_width)
+				 > spdk_u32log2(detzone_ctrlr->base_stripe_blks) - 1) {
+			width = detzone_ctrlr->base_width << (spdk_u32log2(detzone_ctrlr->base_stripe_blks) - 1);
+		}
+	}
+ */
+
 	if (width + zone->num_zone_alloc > DETZONE_MAX_STRIPE_WIDTH) {
 		width = 1u << spdk_u32log2(DETZONE_MAX_STRIPE_WIDTH - zone->num_zone_alloc);
 	}
 	stripe_group->width = width;
 	stripe_group->stripe_blks = detzone_ctrlr->base_stripe_blks >> (spdk_u32log2(width) - spdk_u32log2(detzone_ctrlr->base_width));
+
 	// SPDK_DEBUGLOG(vbdev_detzone, "stripe overdrive conf: base_width(%u) base_stripe_blks(%u) conf_width(%u) conf_stripe_blks(%u)\n",
 	// 												detzone_ctrlr->base_width, detzone_ctrlr->base_stripe_blks,stripe_group->width, stripe_group->stripe_blks);
 #endif
@@ -1207,41 +1378,28 @@ vbdev_detzone_ns_alloc_zone(void *arg)
 		return;
 	}
 
-	// update the allocation history
-	for (uint32_t i = 0; i < stripe_group->width; i++) {
-		detzone_ctrlr->internal.alloc_history[detzone_ctrlr->internal.alloc_history_tail] = detzone_ns->nsid;
-		detzone_ctrlr->internal.alloc_history_tail = (detzone_ctrlr->internal.alloc_history_tail + 1) & (DETZONE_MAX_ALLOC_HISTORY - 1);
-	}
-	detzone_ctrlr->internal.alloc_history_curr_cnt += stripe_group->width;
-	detzone_ctrlr->internal.alloc_history_shrink_cnt += stripe_group->width;
-	if (detzone_ctrlr->internal.alloc_history_curr_cnt >= DETZONE_MAX_ALLOC_HISTORY) {
-		// trigger async redistribution
-		// this also may tigger global shrinking
-		detzone_ctrlr->internal.alloc_history_curr_cnt = 0;
-		spdk_thread_send_msg(detzone_ctrlr->thread, vbdev_detzone_redist_spares, detzone_ctrlr);
-	}
-
 	detzone_ns->internal.used_spares += stripe_group->width - detzone_ctrlr->base_width;
 	detzone_ns->internal.avg_open_zones_milli = DETZONE_EWMA(detzone_ns->internal.avg_open_zones_milli,
 													 detzone_ns->num_active_zones << DETZONE_SHIFT_MILLI_BIN);
 	if (detzone_ns->internal.avg_open_zones_milli >> DETZONE_SHIFT_MILLI_BIN == 0) {
 		detzone_ns->internal.avg_open_zones_milli = 1 << DETZONE_SHIFT_MILLI_BIN;
 	}
-	fprintf(stderr, "alloc stats: ns_id(%u) slba(0x%x) actives(%u) opens(%u) phy_act(%u) phy_op(%u) essentials(%u) spares(%u+%u-%u) used(%u) conf_width(%u) conf_stripe(%u) avg_opens(%.1f)\n",
-										detzone_ns->nsid,
-										zone->zone_id,
-										detzone_ns->num_active_zones,
-										detzone_ns->num_open_zones,
-										detzone_ns->num_phy_active_zones,
-										detzone_ns->num_phy_open_zones,
-										detzone_ns->internal.essentials,
-										detzone_ns->internal.spares,
-										detzone_ns->internal.leased_spares,
-										detzone_ns->internal.lent_spares,
-										detzone_ns->internal.used_spares,
-										stripe_group->width,
-										stripe_group->stripe_blks,
-										detzone_ns->internal.avg_open_zones_milli / ((1.0) * (1 << DETZONE_SHIFT_MILLI_BIN)));
+	// fprintf(stderr, "alloc stats: ns_id(%u) slba(0x%x) actives(%u) opens(%u) phy_act(%u) phy_op(%u) essentials(%u) spares(%u+%u-%u-%u) used(%u) conf_width(%u) conf_stripe(%u) avg_opens(%.1f)\n",
+	// 									detzone_ns->nsid,
+	// 									zone->zone_id,
+	// 									detzone_ns->num_active_zones,
+	// 									detzone_ns->num_open_zones,
+	// 									detzone_ns->num_phy_active_zones,
+	// 									detzone_ns->num_phy_open_zones,
+	// 									detzone_ns->internal.essentials,
+	// 									detzone_ns->internal.spares,
+	// 									detzone_ns->internal.leased_spares,
+	// 									detzone_ns->internal.lent_spares,
+	// 									detzone_ns->internal.reclaimed_spares,
+	// 									detzone_ns->internal.used_spares,
+	// 									stripe_group->width,
+	// 									stripe_group->stripe_blks,
+	// 									detzone_ns->internal.avg_open_zones_milli / ((1.0) * (1 << DETZONE_SHIFT_MILLI_BIN)));
 
 	stripe_group->slba = zone->write_pointer;
 	stripe_group->base_start_idx = basezone_offset;
@@ -1257,6 +1415,21 @@ vbdev_detzone_ns_alloc_zone(void *arg)
 		if (num_zone_alloc == stripe_group->width) {
 			break;
 		}
+	}
+
+	// update the allocation history
+	for (uint32_t i = 0; i < stripe_group->width; i++) {
+		detzone_ctrlr->internal.alloc_history[detzone_ctrlr->internal.alloc_history_tail] = detzone_ns->nsid;
+		detzone_ctrlr->internal.alloc_history_actives[detzone_ctrlr->internal.alloc_history_tail] = detzone_ns->num_phy_active_zones;
+		detzone_ctrlr->internal.alloc_history_tail = (detzone_ctrlr->internal.alloc_history_tail + 1) & (DETZONE_MAX_ALLOC_HISTORY - 1);
+	}
+	detzone_ctrlr->internal.alloc_history_curr_cnt += stripe_group->width;
+	detzone_ctrlr->internal.alloc_history_shrink_cnt += stripe_group->width;
+	if (detzone_ctrlr->internal.alloc_history_curr_cnt >= DETZONE_MAX_ALLOC_HISTORY) {
+		// trigger async redistribution
+		// this also may tigger global shrinking
+		detzone_ctrlr->internal.alloc_history_curr_cnt = 0;
+		spdk_thread_send_msg(detzone_ctrlr->thread, vbdev_detzone_redist_spares, detzone_ctrlr);
 	}
 	
 	//SPDK_DEBUGLOG(vbdev_detzone, "New stripe group: idx(%u) slba(0x%lx) width(%u) stripe_blks(%u)\n",
@@ -2996,7 +3169,7 @@ _detzone_ns_io_read_complete(struct spdk_bdev_io *bdev_io, bool success, void *c
 
 	} else if (!is_congested) {
 		zone_cong->sgrp[sgrp_idx].cpls += 1;
-		if (zone_cong->sgrp[sgrp_idx].cpls >= zone_cong->sgrp[sgrp_idx].cwnd << 5) {
+		if (zone_cong->sgrp[sgrp_idx].cpls >= zone_cong->sgrp[sgrp_idx].cwnd << 3) {
 			if (zone_cong->sgrp[sgrp_idx].cwnd < phy_zone->stripe_group.width << 2) {
 			//if (zone_cong->sgrp[sgrp_idx].cwnd < detzone_ctrlr->per_zone_mdts << spdk_u32log2(phy_zone->stripe_group.width)) {
 				zone_cong->sgrp[sgrp_idx].cwnd += 1;
@@ -3051,8 +3224,7 @@ _detzone_ns_io_read_submit(void *arg)
 		if (spdk_unlikely(blks_to_submit > io_ctx->u.io.remain_blocks)) {
 			blks_to_submit = io_ctx->u.io.remain_blocks;
 		}
-		//SPDK_DEBUGLOG(vbdev_detzone, "READ UNALLOCATED: offset(0x%lx) len(0x%lx) remain(0x%lx)\n",
-		fprintf(stderr, "READ UNALLOCATED: offset(0x%lx) len(0x%lx) remain(0x%lx)\n",
+		SPDK_DEBUGLOG(vbdev_detzone, "READ UNALLOCATED: offset(0x%lx) len(0x%lx) remain(0x%lx)\n",
 										 io_ctx->u.io.next_offset_blocks,
 										 blks_to_submit, io_ctx->u.io.remain_blocks);
 		//memset(bdev_io->u.bdev.iovs[io_ctx->u.io.iov_idx].iov_base + io_ctx->u.io.iov_offset,
@@ -3357,11 +3529,17 @@ _detzone_ns_io_write_complete(struct spdk_bdev_io *bdev_io, bool success, void *
 		uint64_t zone_idx;
 		zone_idx = _vbdev_detzone_ns_get_zone_idx(detzone_ns, zone->zone_id);
 		io_latency_tsc = spdk_get_ticks() - spdk_bdev_io_get_submit_tsc(bdev_io);
+#ifdef DETZONE_UBENCH
+		pthread_spin_lock(&detzone_ch->lock);
+#endif
 		detzone_ch->zone_cong[zone_idx].write_blks += bdev_io->u.bdev.num_blocks;
 		detzone_ch->zone_cong[zone_idx].write_blks_tsc += io_latency_tsc;
 		if (detzone_ch->zone_cong[zone_idx].write_blks == bdev_io->u.bdev.num_blocks) {
 			TAILQ_INSERT_TAIL(&detzone_ch->write_zones, &detzone_ch->zone_cong[zone_idx], link);
 		}
+#ifdef DETZONE_UBENCH
+		pthread_spin_unlock(&detzone_ch->lock);
+#endif
 		// fprintf(stderr, "write latency (0x%lx) (%llu / %llu us) blks(%lu)\n",
 		// 										zone->zone_id,
 		// 										 io_latency_tsc * SPDK_SEC_TO_USEC / spdk_get_ticks_hz(),
@@ -3944,7 +4122,7 @@ _vbdev_detzone_ns_submit_request_write(void *arg)
 		io_ctx->type = DETZONE_IO_WRITE;
 		io_ctx->u.io.remain_blocks = bdev_io->u.bdev.num_blocks;
 		io_ctx->u.io.next_offset_blocks = bdev_io->u.bdev.offset_blocks;
-		if (bdev_io->u.bdev.offset_blocks != zone->write_pointer) {
+		if (bdev_io->u.bdev.offset_blocks != zone->write_pointer + zone->write_pending_blks) {
 			SPDK_ERRLOG("Invalid WP given: request_wp(0x%lx) curr_wp(0x%lx) zs(%u)\n",
 									bdev_io->u.bdev.offset_blocks,
 									zone->write_pointer,
@@ -4315,6 +4493,9 @@ detzone_bdev_io_ch_create_cb(void *io_device, void *ctx_buf)
 		detzone_ch->zone_cong[i].write_blks_tsc = 0;
 	}
 	TAILQ_INIT(&detzone_ch->write_zones);
+#ifdef DETZONE_UBENCH
+	pthread_spin_init(&detzone_ch->lock, 0);
+#endif
 
 	detzone_ch->rd_lat_tsc_thresh = spdk_get_ticks_hz() * 500 / SPDK_SEC_TO_USEC;
 	fprintf(stderr, "detzone ns: create io channel %u (is_writable: %d)\n", detzone_ch->ch_id, detzone_ns->primary_thread == NULL);
@@ -4666,14 +4847,18 @@ vbdev_detzone_ns_register(const char *ctrl_name, const char *ns_name)
 			//TODO: should check base_bdev zone capacity
 			detzone_ns->base_avail_zcap = detzone_ctrlr->zone_info[0].capacity - detzone_ns->padding_blocks;
 			detzone_ns->zcap = detzone_ns->base_avail_zcap * DETZONE_MAX_STRIPE_WIDTH;
-
 			detzone_ns->detzone_ns_bdev.zone_size = spdk_align64pow2(detzone_ns->zcap);
 			//detzone_ns->detzone_ns_bdev.zone_size = detzone_ns->zcap;
 			detzone_ns->detzone_ns_bdev.required_alignment = bdev->required_alignment;
 			detzone_ns->detzone_ns_bdev.max_zone_append_size = bdev->max_zone_append_size;
 #ifdef DETZONE_UBENCH
+#ifdef DETZONE_UBENCH_OVERDRIVE
+			detzone_ns->detzone_ns_bdev.max_open_zones = DETZONE_NS_MAX_OPEN_ZONE;
+			detzone_ns->detzone_ns_bdev.max_active_zones = DETZONE_NS_MAX_OPEN_ZONE;
+#else
 			detzone_ns->detzone_ns_bdev.max_open_zones = 128;
 			detzone_ns->detzone_ns_bdev.max_active_zones = 128;
+#endif
 			detzone_ns->primary_thread = detzone_ctrlr->thread;
 			detzone_ns->primary_ch = detzone_ctrlr->mgmt_ch;
 			spdk_thread_send_msg(detzone_ns->primary_thread, __open_primary_poller, detzone_ns);
@@ -4728,6 +4913,30 @@ vbdev_detzone_ns_register(const char *ctrl_name, const char *ns_name)
 				goto error_close;
 			}
 			// SPDK_DEBUGLOG(vbdev_detzone, "create mempool: %s (%ld)\n", md_pool_name, spdk_mempool_count(detzone_ns->md_buf_pool));
+
+			detzone_ns->internal.avg_open_zones_milli = detzone_ns->detzone_ns_bdev.max_active_zones << DETZONE_SHIFT_MILLI_BIN;
+#ifdef DETZONE_UBENCH
+#ifdef DETZONE_UBENCH_OVERDRIVE
+			detzone_ns->internal.essentials = detzone_ctrlr->base_essentials;
+			detzone_ns->internal.spares = detzone_ctrlr->base_spares;
+#else
+			detzone_ns->internal.essentials = detzone_ctrlr->base_essentials;
+			detzone_ns->internal.spares = detzone_ctrlr->base_essentials * (detzone_ns->nsid - 1);
+#endif
+#else
+			detzone_ns->internal.essentials = detzone_ctrlr->base_essentials;
+			detzone_ns->internal.spares = detzone_ctrlr->base_spares;
+#endif
+			if (detzone_ctrlr->avail_spares >= detzone_ns->internal.spares) {
+				detzone_ctrlr->avail_spares -= detzone_ns->internal.spares;
+				detzone_ns->internal.lent_spares = 0;
+			} else {
+				detzone_ns->internal.lent_spares = detzone_ns->internal.spares - detzone_ctrlr->avail_spares;
+				detzone_ctrlr->avail_spares = 0;
+			}
+			detzone_ns->internal.used_spares = 0;
+			detzone_ns->internal.leased_spares = 0;
+			detzone_ns->internal.reclaimed_spares = 0;
 
 			detzone_ns->internal.epoch_num_pu = 0;
 			detzone_ns->internal.epoch_pu_map = spdk_bit_array_create(detzone_ctrlr->num_pu);
@@ -4869,6 +5078,9 @@ vbdev_detzone_ns_register(const char *ctrl_name, const char *ns_name)
 							}
 							write_pointer += valid_blks;
 							prev_valid_blks = valid_blks;
+							if (_detzone_is_active_state(phy_zone[base_zone_idx].state)) {
+								detzone_ns->internal.used_spares += phy_zone[base_zone_idx].stripe_group.width - detzone_ctrlr->base_width;
+							}
 						}
 
 						if (zone[i].write_pointer != write_pointer) {						
@@ -4900,24 +5112,6 @@ vbdev_detzone_ns_register(const char *ctrl_name, const char *ns_name)
 				spdk_io_device_unregister(detzone_ns, NULL);
 				goto error_close;
 			}
-
-			detzone_ns->internal.avg_open_zones_milli = detzone_ns->detzone_ns_bdev.max_active_zones << DETZONE_SHIFT_MILLI_BIN;
-#ifdef DETZONE_UBENCH
-			detzone_ns->internal.essentials = detzone_ctrlr->base_essentials;
-			detzone_ns->internal.spares = detzone_ctrlr->base_essentials * (detzone_ns->nsid - 1);
-#else
-			detzone_ns->internal.essentials = detzone_ctrlr->base_essentials;
-			detzone_ns->internal.spares = detzone_ctrlr->base_spares;
-#endif
-			if (detzone_ctrlr->avail_spares >= detzone_ns->internal.spares) {
-				detzone_ctrlr->avail_spares -= detzone_ns->internal.spares;
-				detzone_ns->internal.lent_spares = 0;
-			} else {
-				detzone_ns->internal.lent_spares = detzone_ns->internal.spares - detzone_ctrlr->avail_spares;
-				detzone_ctrlr->avail_spares = 0;
-			}
-			detzone_ns->internal.used_spares = 0;
-			detzone_ns->internal.leased_spares = 0;
 
 			++detzone_ctrlr->num_ns;
 			TAILQ_INSERT_TAIL(&detzone_ctrlr->ns, detzone_ns, link);
@@ -5048,6 +5242,9 @@ _vbdev_detzone_wr_stat_iter(struct spdk_io_channel_iter *i)
 	struct detzone_io_channel *detzone_ch = spdk_io_channel_get_ctx(ch);
 	struct detzone_io_channel_cong *zone_cong;
 
+#ifdef DETZONE_UBENCH
+		pthread_spin_lock(&detzone_ch->lock);
+#endif
 	while (!TAILQ_EMPTY(&detzone_ch->write_zones)) {
 		zone_cong = TAILQ_FIRST(&detzone_ch->write_zones);
 		if (zone_cong->write_blks > 0) {
@@ -5055,11 +5252,14 @@ _vbdev_detzone_wr_stat_iter(struct spdk_io_channel_iter *i)
 			detzone_ctrlr->internal.active_write_zones += 1;
 			detzone_ctrlr->internal.total_avg_write_blk_tsc += zone_cong->write_blks_tsc
 																/ zone_cong->write_blks;
-			zone_cong->write_blks = 0;
-			zone_cong->write_blks_tsc = 0;
 		}
+		zone_cong->write_blks = 0;
+		zone_cong->write_blks_tsc = 0;
 		TAILQ_REMOVE(&detzone_ch->write_zones, zone_cong, link);
 	}
+#ifdef DETZONE_UBENCH
+		pthread_spin_unlock(&detzone_ch->lock);
+#endif
 
 	spdk_for_each_channel_continue(i, 0);
 }
@@ -5073,81 +5273,91 @@ _vbdev_detzone_wr_stat_done(struct spdk_io_channel_iter *i, int status)
 	uint64_t	avg_write_lat_tsc;
 	static uint64_t counter = 0;
 
-	uint64_t written_blks[5] = {0};
+	uint64_t written_blks;
 	uint32_t written_zones[5] = {0};
 
 	assert(spdk_get_thread() == detzone_ctrlr->thread);
 
-	counter += 1;
-	if (0) {
-		for (uint64_t i=0; i < detzone_ns->detzone_ns_bdev.blockcnt / detzone_ns->detzone_ns_bdev.zone_size; i++) {
-			struct vbdev_detzone_ns_zone *zone;
-			zone = &detzone_ns->internal.zone[i];
-
-			if (zone->write_pointer > zone->last_write_pointer[0]) {
-				written_blks[0] += zone->write_pointer - zone->last_write_pointer[0];
-				written_zones[0] += 1;
-				zone->last_write_pointer[0] = zone->write_pointer;
-			}
-
-			if (counter % 3 == 0 && zone->write_pointer > zone->last_write_pointer[1]) {
-				written_blks[1] += zone->write_pointer - zone->last_write_pointer[1];
-				written_zones[1] += 1;
-				zone->last_write_pointer[1] = zone->write_pointer;
-			}
-
-			if (counter % 10 == 0 && zone->write_pointer > zone->last_write_pointer[2]) {
-				written_blks[2] += zone->write_pointer - zone->last_write_pointer[2];
-				written_zones[2] += 1;
-				zone->last_write_pointer[2] = zone->write_pointer;
-			}
-
-		}
-		if (written_blks[0] + written_blks[1] + written_blks[2]) {
-			fprintf(stderr, "%lu, ns_id, %u, WAF, %0.2f, actives, %u, opens, %u, phy_actives, %u, phy_opens, %u, ",
-												spdk_get_ticks() * 1000 / spdk_get_ticks_hz(),
-												detzone_ns->nsid,
-												(detzone_ns->internal.total_shrinked_blks + detzone_ns->internal.total_written_blks) / (1.0 * detzone_ns->internal.total_written_blks),
-												detzone_ns->num_active_zones,
-												detzone_ns->num_open_zones,
-												detzone_ns->num_phy_active_zones,
-												detzone_ns->num_phy_open_zones);
-			if (written_blks[0]) {
-				fprintf(stderr, "%lu, %u, ", written_blks[0], written_zones[0]);
-			} else {
-				fprintf(stderr, ", , ");
-			}
-			written_blks[0] = 0;
-			written_zones[0] = 0;
-
-			if (counter % 3 == 0) {
-				if (written_blks[1]) {
-					fprintf(stderr, "%lu, %u, ", written_blks[1], written_zones[1]);
-				} else {
-					fprintf(stderr, ", , ");
-				}
-				written_blks[1] = 0;
-				written_zones[1] = 0;
-			} else {
-				fprintf(stderr, ", , ");
-			}
-
-			if (counter % 10 == 0) {
-				if (written_blks[2]) {
-					fprintf(stderr, "%lu, %u\n", written_blks[2], written_zones[2]);
-				} else {
-					fprintf(stderr, ", \n");
-				}
-				written_blks[2] = 0;
-				written_zones[2] = 0;
-			} else {
-				fprintf(stderr, ", \n");
-			}
-		}
-	}
-
 	detzone_ns_next = TAILQ_NEXT(detzone_ns, link);
+	//fprintf(stderr, "find next namespace (%p)\n", detzone_ns_next);
+
 	if (detzone_ns_next == NULL) {
+		counter += 1;
+
+		if (counter % 1000 == 0) {
+			fprintf(stderr, "%lu, ", spdk_get_ticks() * 1000 / spdk_get_ticks_hz());
+			TAILQ_FOREACH(detzone_ns, &detzone_ctrlr->ns, link) {
+				written_blks = detzone_ns->internal.total_written_blks - detzone_ns->internal.last_written_blks;
+				fprintf(stderr, "%u, %u, %u, %u, %u, %lu, ",
+													detzone_ns->nsid,
+													detzone_ns->num_active_zones,
+													detzone_ns->num_open_zones,
+													detzone_ns->num_phy_active_zones,
+													detzone_ns->num_phy_open_zones,
+													written_blks);
+/* 				for (uint64_t i=0; i < detzone_ns->detzone_ns_bdev.blockcnt / detzone_ns->detzone_ns_bdev.zone_size; i++) {
+					struct vbdev_detzone_ns_zone *zone;
+					zone = &detzone_ns->internal.zone[i];
+					if (zone->write_pointer != zone->last_write_pointer[0]) {
+						written_zones[0] += 1;
+						zone->last_write_pointer[0] = zone->write_pointer;
+					}
+
+					if (counter % 3000 == 0 && zone->write_pointer != zone->last_write_pointer[1]) {
+						written_zones[1] += 1;
+						zone->last_write_pointer[1] = zone->write_pointer;
+					}
+
+					if (counter % 10000 == 0 && zone->write_pointer != zone->last_write_pointer[2]) {
+						written_zones[2] += 1;
+						zone->last_write_pointer[2] = zone->write_pointer;
+					}
+
+				}
+				if (written_blks) {
+					fprintf(stderr, "%lu, ns_id, %u, WAF, %0.2f, actives, %u, opens, %u, phy_actives, %u, phy_opens, %u, %lu, ",
+														spdk_get_ticks() * 1000 / spdk_get_ticks_hz(),
+														detzone_ns->nsid,
+														(detzone_ns->internal.total_shrinked_blks + detzone_ns->internal.total_written_blks) / (1.0 * detzone_ns->internal.total_written_blks),
+														detzone_ns->num_active_zones,
+														detzone_ns->num_open_zones,
+														detzone_ns->num_phy_active_zones,
+														detzone_ns->num_phy_open_zones,
+														written_blks);
+					if (written_zones[0]) {
+						fprintf(stderr, "%u, ", written_zones[0]);
+					} else {
+						fprintf(stderr, ", ");
+					}
+					written_zones[0] = 0;
+
+					if (counter % 3000 == 0) {
+						if (written_zones[1]) {
+							fprintf(stderr, "%u, ", written_zones[1]);
+						} else {
+							fprintf(stderr, ", ");
+						}
+						written_zones[1] = 0;
+					} else {
+						fprintf(stderr, ", ");
+					}
+
+					if (counter % 10000 == 0) {
+						if (written_zones[2]) {
+							fprintf(stderr, "%u, \n", written_zones[2]);
+						} else {
+							fprintf(stderr, ", \n");
+						}
+						written_zones[2] = 0;
+					} else {
+						fprintf(stderr, ", \n");
+					}
+				}
+*/				detzone_ns->internal.last_written_blks = detzone_ns->internal.total_written_blks;
+			}
+ 			fprintf(stderr, "\n");
+		}
+
 		if (detzone_ctrlr->internal.active_write_zones) {
 			avg_write_lat_tsc = detzone_ctrlr->internal.total_avg_write_blk_tsc
 														/ detzone_ctrlr->internal.active_write_zones;
