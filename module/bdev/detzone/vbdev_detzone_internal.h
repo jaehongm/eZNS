@@ -39,11 +39,9 @@
 #include "spdk/assert.h"
 
 #define DETZONE_OVERDRIVE
-//#define DETZONE_GLOBAL_OVERDRIVE
-//#define DETZONE_STATIC_ZONE
+#define DETZONE_GLOBAL_OVERDRIVE
 //#define DETZONE_LIMIT_TO_8
 //#define DETZONE_UBENCH
-//#define DETZONE_UBENCH_OVERDRIVE
 //#define DETZONE_NO_ADMIT_CTRL
 //#define DETZONE_NO_CC
 
