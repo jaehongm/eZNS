@@ -40,7 +40,8 @@
 
 #define DETZONE_OVERDRIVE
 #define DETZONE_GLOBAL_OVERDRIVE
-//#define DETZONE_LIMIT_TO_8
+//#define DETZONE_RECLAIMING
+#define DETZONE_OV_WIDTH_NOLIMIT
 //#define DETZONE_UBENCH
 //#define DETZONE_NO_ADMIT_CTRL
 //#define DETZONE_NO_CC
@@ -56,6 +57,9 @@
 #define DETZONE_MAX_RESERVE_ZONES 16
 #define DETZONE_MAX_NAMESPACES 8
 #define DETZONE_SHIFT_MILLI_BIN 10
+
+#define DETZONE_MAX_ALLOC_HISTORY	(1 << 7)
+#define DETZONE_REDIST_THRESH		32
 
 enum detzone_io_type {
 	DETZONE_IO_NONE = 0,
@@ -223,7 +227,7 @@ struct vbdev_detzone_ns_stripe_group {
 	uint32_t				stripe_blks;
 	uint32_t				base_start_idx;
 	//uint32_t				base_zone_idx[DETZONE_MAX_STRIPE_WIDTH];
-	uint32_t				leased_width;
+	//uint32_t				leased_width;
 };
 
 struct vbdev_detzone_ns_zone {
@@ -377,8 +381,6 @@ struct vbdev_detzone_zone_info {
 	TAILQ_ENTRY(vbdev_detzone_zone_info) link;
 };
 
-#define DETZONE_MAX_ALLOC_HISTORY	(1 << 7)
-
 /* List of detzone bdev ctrls and associated info for each. */
 struct vbdev_detzone {
 	struct spdk_bdev		*base_bdev; /* the thing we're attaching to */
@@ -417,7 +419,6 @@ struct vbdev_detzone {
 		uint64_t			active_write_zones;
 		uint64_t			total_avg_write_blk_tsc;
 
-		uint32_t			alloc_history_shrink_cnt;
 		uint32_t			alloc_history_curr_cnt;
 		uint32_t			alloc_history_tail;
 		uint32_t			alloc_history[DETZONE_MAX_ALLOC_HISTORY];
