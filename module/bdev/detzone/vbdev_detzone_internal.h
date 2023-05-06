@@ -40,11 +40,10 @@
 
 #define DETZONE_OVERDRIVE
 #define DETZONE_GLOBAL_OVERDRIVE
-//#define DETZONE_RECLAIMING
-#define DETZONE_OV_WIDTH_NOLIMIT
+#define DETZONE_RECLAIMING
 //#define DETZONE_UBENCH
-//#define DETZONE_NO_ADMIT_CTRL
-//#define DETZONE_NO_CC
+// #define DETZONE_NO_ADMIT_CTRL
+// #define DETZONE_NO_CC
 
 #define DETZONE_NS_META_FORMAT_VER	1
 #define DETZONE_NS_MAX_ACTIVE_ZONE 	16
@@ -54,11 +53,11 @@
 #define DETZONE_RESERVATION_BLKS 1
 #define DETZONE_INLINE_META_BLKS 1
 #define DETZONE_WRITEV_MAX_IOVS 32
-#define DETZONE_MAX_RESERVE_ZONES 16
+#define DETZONE_MAX_RESERVE_ZONES 32
 #define DETZONE_MAX_NAMESPACES 8
 #define DETZONE_SHIFT_MILLI_BIN 10
 
-#define DETZONE_MAX_ALLOC_HISTORY	(1 << 7)
+#define DETZONE_MAX_ALLOC_HISTORY	(1 << 10)
 #define DETZONE_REDIST_THRESH		32
 
 enum detzone_io_type {
@@ -315,7 +314,6 @@ struct vbdev_detzone_ns {
 		uint32_t				lent_spares;
 		uint32_t				leased_spares;
 		uint32_t				reclaimed_spares;
-		uint32_t				inactivity_cnt;
 
 		uint64_t				total_written_blks;
 		uint64_t				total_shrinked_blks;
