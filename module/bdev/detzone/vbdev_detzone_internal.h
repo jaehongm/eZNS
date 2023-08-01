@@ -41,7 +41,6 @@
 #define DETZONE_OVERDRIVE
 #define DETZONE_GLOBAL_OVERDRIVE
 #define DETZONE_RECLAIMING
-//#define DETZONE_UBENCH
 // #define DETZONE_NO_ADMIT_CTRL
 // #define DETZONE_NO_CC
 
@@ -203,9 +202,6 @@ struct detzone_io_channel {
 	// uint64_t			total_write_blk_tsc;
 
 	struct spdk_poller	*write_sched_poller; /* credit generator */
-#ifdef DETZONE_UBENCH
-	pthread_spinlock_t lock;
-#endif
 
 	TAILQ_HEAD(, detzone_io_channel_cong)	write_zones;
 };
@@ -261,8 +257,6 @@ struct vbdev_detzone_ns_zone {
 	uint64_t					tb_cpl_bytes;
 	uint64_t					tb_last_update_tsc;
 
-	uint64_t					last_write_pointer[5];  // measuring statistic purpose
-
 	TAILQ_HEAD(, detzone_bdev_io)	wr_pending;
 	TAILQ_HEAD(, detzone_bdev_io)	wr_wait_for_cpl;
 
@@ -288,9 +282,6 @@ struct vbdev_detzone_ns {
 	uint64_t	base_zsze;
 	uint64_t	base_avail_zcap;
 
-	// Namespace specific configuration parameters
-	//uint32_t	zone_stripe_blks; /* stripe size (in blocks) */
-	//uint32_t	zone_stripe_tb_size;
 	uint64_t	zcap;		// Logical Zone Capacity
 	uint32_t	padding_blocks;	// num of blocks for padding at the beginning of base zone
 
@@ -404,7 +395,6 @@ struct vbdev_detzone {
 	uint32_t			base_spares;
 	uint32_t			avail_spares;		/* number of spares are avilable to allot for namespaces */
 	uint32_t			base_stripe_blks;
-	uint64_t			claimed_blockcnt; /* claimed blocks by namespaces */
 	struct spdk_thread		*thread;    /* thread where base device is opened */
 
 	uint64_t			num_zones;
@@ -507,16 +497,5 @@ _dump_zone_info(struct vbdev_detzone_ns *detzone_ns)
 		fprintf(stderr, "}\n");
 	}
 }
-
-static const char* action_str[SPDK_BDEV_ZONE_EXT_REPORT+1] = {
-	"CLOSE",
-	"FINISH",
-	"OPEN",
-	"RESET",
-	"OFFLINE",
-	"SET_ZDE",
-	"REPORT",
-	"EXT_REPORT"
-};
 
 #endif /* SPDK_VBDEV_DETZONE_INTERNAL_H */
