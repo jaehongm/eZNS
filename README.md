@@ -47,3 +47,9 @@ You can enable/disable features in `vbdev_detzone_internal.h`.
 Most of the parameters are also configurable, but we recommend you read the paper
 and take some time with the codes before making a change.
 
+## Recovery after shutdown
+
+This version DOES NOT guarantee full recovery after shutdown.
+(Current recovery procedure does not apply to the latest data structure.)
+We highly recommend users perform RESET for all zones before running eZNS.
+
